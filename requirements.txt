@@ -1,0 +1,4 @@
+neonize
+apscheduler
+python-dotenv
+pytest
