@@ -54,3 +54,6 @@ class FakeClock:
 
     def advance(self, delta: timedelta) -> None:
         self._now += delta
+
+    def set_now(self, now: datetime) -> None:
+        self._now = now
