@@ -4,7 +4,12 @@ Une legende peut lister plusieurs numeros a la suite ("658 659 660",
 "181, 182, 183") : c'est autorise quand quelqu'un rattrape plusieurs bieres
 d'un coup dans une seule photo. Pour etre valide, ces numeros doivent former
 une sequence strictement consecutive qui demarre exactement au compteur
-attendu -- sinon c'est rejete comme n'importe quelle legende invalide.
+attendu.
+
+Du texte ou des emojis peuvent entourer le(s) numero(s) ("651 🍻",
+"la 651e", "17 rouge et vert ca fait jaune" -- vu sur les vraies donnees),
+tant que ca reste court : au-dela de MAX_EXTRA_WORDS mots hors numeros,
+la legende est consideree trop chargee et rejetee.
 """
 
 from __future__ import annotations
@@ -19,10 +24,11 @@ from src.gateway import IncomingMessage
 # (courant sur les exports WhatsApp reels : "#651").
 _NOISE_CHARS = (" ", " ", "#")
 
-# Un ou plusieurs nombres, separes par espaces/virgules/tirets -- les trois
-# formes vues sur les vraies donnees pour poster plusieurs bieres d'un coup
-# ("658 659 660", "181, 182, 183", "239-240-241").
-_NUMBER_LIST_RE = re.compile(r"^\d+(?:[\s,\-]+\d+)*$")
+_DIGITS_RE = re.compile(r"\d+")
+
+# "quelques mots" de texte/emoji tolérés autour du/des numéro(s). Calibré sur
+# les vraies légendes observées (1 à 6 mots, ex. "rouge et vert ça fait jaune").
+MAX_EXTRA_WORDS = 6
 
 
 @dataclass
@@ -34,15 +40,24 @@ class Verdict:
 
 
 def parse_numbers(caption: str) -> tuple[int, ...] | None:
+    """Extrait le ou les numéros d'une légende, en tolérant du texte/emoji
+    autour tant qu'il en reste peu. Retourne None si aucun numéro n'est
+    trouvé, ou si trop de texte l'entoure."""
+
     cleaned = caption.strip()
     for ch in _NOISE_CHARS:
         cleaned = cleaned.replace(ch, "")
-    cleaned = cleaned.strip()
 
-    if not _NUMBER_LIST_RE.match(cleaned):
+    numbers = tuple(int(tok) for tok in _DIGITS_RE.findall(cleaned))
+    if not numbers:
         return None
 
-    return tuple(int(tok) for tok in re.findall(r"\d+", cleaned))
+    remainder = _DIGITS_RE.sub(" ", cleaned)
+    extra_words = [w for w in remainder.split() if w.strip(",.-")]
+    if len(extra_words) > MAX_EXTRA_WORDS:
+        return None
+
+    return numbers
 
 
 def validate(msg: IncomingMessage, expected: int) -> Verdict:

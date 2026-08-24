@@ -24,9 +24,10 @@ def img_msg(caption, has_image=True):
         (" 651 ", 651, True),
         ("0651", 651, True),
         ("#651", 651, True),
-        ("651 ", 651, True),
-        ("651 🍻", 651, False),
-        ("la 651e", 651, False),
+        ("651 ", 651, True),
+        ("651 🍻", 651, True),  # emoji après le numéro : autorisé
+        ("🍺 651", 651, True),  # emoji avant le numéro : autorisé
+        ("la 651e", 651, True),  # quelques mots autour : autorisé
         ("650", 651, False),
         ("", 651, False),
     ],
@@ -45,6 +46,12 @@ def test_no_caption_rejected():
     verdict = validate(img_msg(None), 651)
     assert verdict.ok is False
     assert verdict.reason == "NO_CAPTION"
+
+
+def test_caption_with_no_number_at_all_is_rejected():
+    verdict = validate(img_msg("Bienvenue dans le groupe"), 651)
+    assert verdict.ok is False
+    assert verdict.reason == "CAPTION_NOT_NUMERIC"
 
 
 def test_wrong_number_carries_the_parsed_number():
@@ -85,8 +92,24 @@ def test_multiple_numbers_with_a_gap_are_rejected():
     assert verdict.reason == "WRONG_NUMBER"
 
 
-def test_multiple_numbers_with_extra_text_are_rejected():
+def test_multiple_numbers_with_a_bit_of_text_are_still_wrong_number():
+    # Le texte autour reste dans la limite tolérée, mais 177 et 180 ne se
+    # suivent pas : le rejet vient de la séquence, pas du texte.
     verdict = validate(img_msg("177 - 180 la prochaine"), 177)
+    assert verdict.ok is False
+    assert verdict.reason == "WRONG_NUMBER"
+
+
+def test_short_comment_around_number_is_accepted_real_example():
+    # Exemple vu tel quel sur les vraies données.
+    verdict = validate(img_msg("17 rouge et vert ça fait jaune"), 17)
+    assert verdict.ok is True
+    assert verdict.numbers == (17,)
+
+
+def test_too_much_text_around_number_is_rejected():
+    caption = "651 je pense que c'est vraiment une super bonne bière du jour franchement"
+    verdict = validate(img_msg(caption), 651)
     assert verdict.ok is False
     assert verdict.reason == "CAPTION_NOT_NUMERIC"
 

@@ -14,8 +14,7 @@ REASONS = {
     "NOT_AN_IMAGE": "ton message ne contenait pas de photo",
     "NO_CAPTION": "ta photo n'avait pas de légende",
     "CAPTION_NOT_NUMERIC": (
-        "la légende doit contenir uniquement le numéro, "
-        "pas de commentaire, pas d'emoji, pas de « la 700e ! »"
+        "ta légende n'a pas de numéro clair, ou beaucoup trop de texte autour"
     ),
     "WRONG_NUMBER": "le numéro ne suivait pas le compteur",
 }
