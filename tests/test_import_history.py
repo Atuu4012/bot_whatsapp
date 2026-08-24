@@ -99,15 +99,24 @@ def test_irrelevant_chat_between_photo_and_followup_does_not_block_reconciliatio
     assert numbers == {1, 2}
 
 
-def test_wrong_caption_corrected_by_followup_message(tmp_path):
-    numbers = _import(
-        tmp_path,
+def test_wrong_caption_treated_as_typo_when_number_already_taken(tmp_path):
+    # Cas réel ("21 »" pour "210") : ce qui rend "21" suspect, ce n'est pas
+    # qu'il "ne suit pas" un compteur (les trous sont permis, §6.4) — c'est
+    # que 21 a déjà été posté ailleurs. On le simule en le pré-important.
+    export = tmp_path / "export.txt"
+    export.write_text(
         "[1/1/26, 10:00:00] Alix: 1 <attached: a.jpg>\n"
         "[1/1/26, 10:00:05] Alix: 21 <attached: b.jpg>\n"
         "[1/1/26, 10:00:16] Alix: 2*\n",
-        ["Alix"],
+        encoding="utf-8",
     )
-    assert numbers == {1, 2}  # "21" corrigé en "2", jamais compté tel quel
+    entries = parse_export(export)
+
+    resolved, corrected, unresolved = reconcile(entries, already_used={21})
+
+    resolved_numbers = {n for _, _, nums in resolved for n in nums}
+    assert resolved_numbers == {1, 2}  # "21" corrigé en "2", jamais réinséré comme doublon
+    assert corrected == 1
 
 
 def test_followup_outside_window_is_not_merged(tmp_path):
@@ -121,11 +130,47 @@ def test_followup_outside_window_is_not_merged(tmp_path):
     assert numbers == {1}  # la photo sans légende reste non comptée
 
 
-def test_reconcile_resumes_from_a_given_expected_counter():
+def test_reconcile_resolves_665_and_667_from_the_real_shaped_fixture():
     entries = parse_export(FIXTURES / "sample_empty_message.txt")
-    resolved, corrected, unresolved = reconcile(entries, expected=665)
+    resolved, corrected, unresolved = reconcile(entries)
 
     resolved_numbers = {n for _, _, nums in resolved for n in nums}
     assert 665 in resolved_numbers
     assert 667 in resolved_numbers
     assert corrected >= 1
+
+
+def test_reconcile_accepts_a_gap_in_the_sequence_without_reconciliation(tmp_path):
+    # §6.4 : les trous sont permis. Un numéro qui ne suit pas immédiatement
+    # le précédent doit être accepté directement, pas mis en attente.
+    export = tmp_path / "export.txt"
+    export.write_text(
+        "[1/1/26, 10:00:00] Karl: 1 <attached: a.jpg>\n"
+        "[1/1/26, 10:01:00] Karl: 5 <attached: b.jpg>\n",  # 2,3,4 manquent : trou toléré
+        encoding="utf-8",
+    )
+    entries = parse_export(export)
+    resolved, corrected, unresolved = reconcile(entries)
+
+    resolved_numbers = {n for _, _, nums in resolved for n in nums}
+    assert resolved_numbers == {1, 5}
+    assert corrected == 0
+    assert unresolved == 0
+
+
+def test_reconcile_accepts_a_multi_number_caption_even_with_a_gap_before_it(tmp_path):
+    # Le cas réel exact qui a régressé : "181 , 182 , 183" arrive après un
+    # trou (177 manquant, 178 jamais résolu) et doit quand même être compté.
+    export = tmp_path / "export.txt"
+    export.write_text(
+        "[1/1/26, 10:00:00] Hugo: 176 <attached: a.jpg>\n"
+        "[1/1/26, 10:01:00] Hugo: 178 <attached: b.jpg>\n"  # 177 manque : trou
+        "[1/1/26, 10:02:00] Hugo: 181 , 182 , 183 <attached: c.jpg>\n",
+        encoding="utf-8",
+    )
+    entries = parse_export(export)
+    resolved, corrected, unresolved = reconcile(entries)
+
+    resolved_numbers = {n for _, _, nums in resolved for n in nums}
+    assert resolved_numbers == {176, 178, 181, 182, 183}
+    assert corrected == 0

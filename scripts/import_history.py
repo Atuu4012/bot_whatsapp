@@ -62,22 +62,31 @@ def _prune(queue: list, now: datetime, ts_of) -> None:
 
 
 def reconcile(
-    entries: list[ImportedEntry], expected: int = 1
+    entries: list[ImportedEntry], already_used: set[int] | None = None
 ) -> tuple[list[tuple[str, datetime, tuple[int, ...]]], int, int]:
     """Associe pièces jointes et numéros dispersés en soumissions résolues.
 
-    `expected` est le premier numéro attendu (typiquement `db.next_expected_number()`
-    pour reprendre après un import partiel). Retourne (soumissions,
+    Une légende qui se lit comme un ou plusieurs numéros valides est
+    directement acceptée, même si elle ne suit pas immédiatement le dernier
+    numéro connu : le plan autorise explicitement les trous dans la
+    séquence (§6.4 — le compteur de référence, c'est MAX(number), pas une
+    chaîne ininterrompue). On ne déclenche la réconciliation que quand la
+    légende est absente/illisible, OU que son premier numéro est déjà pris
+    — signe probable d'une faute de frappe (ex. "21 »" pour "210") plutôt
+    que d'un trou légitime.
+
+    `already_used` pré-remplit les numéros déjà en base (reprise d'un
+    import partiel) ; par défaut, ensemble vide. Retourne (soumissions,
     nb_corrigées_par_reconciliation, nb_non_résolues). Une soumission est
     (auteur, horodatage, numéros) — plusieurs numéros si une légende en
     listait plusieurs ("658 659 660").
     """
 
+    used = set(already_used) if already_used else set()
     pending_media: dict[str, list[datetime]] = defaultdict(list)
     pending_numbers: dict[str, list[tuple[datetime, tuple[int, ...]]]] = defaultdict(list)
     resolved: list[tuple[str, datetime, tuple[int, ...]]] = []
     corrected = 0
-    # `expected` n'avance qu'au fil des soumissions résolues, dans l'ordre
 
     for entry in entries:
         author = entry.author
@@ -87,17 +96,18 @@ def reconcile(
         if entry.has_attachment:
             numbers = parse_numbers(entry.caption) if entry.caption else None
 
-            if numbers is not None and numbers[0] == expected:
+            if numbers is not None and numbers[0] not in used:
                 resolved.append((author, entry.ts, numbers))
-                expected += len(numbers)
+                used.update(numbers)
                 continue
 
-            # Légende absente/fausse : un numéro était peut-être déjà
-            # arrivé avant la pièce jointe (l'auteur annonce, puis envoie).
+            # Légende absente, illisible, ou son numéro est déjà pris : un
+            # numéro était peut-être déjà arrivé avant la pièce jointe
+            # (l'auteur annonce, puis envoie), ou arrive juste après.
             if pending_numbers[author]:
                 _, waiting_numbers = pending_numbers[author].pop(0)
                 resolved.append((author, entry.ts, waiting_numbers))
-                expected += len(waiting_numbers)
+                used.update(waiting_numbers)
                 corrected += 1
                 continue
 
@@ -117,7 +127,7 @@ def reconcile(
                 media_ts = pending_media[author].pop(0)
                 n = remaining.pop(0)
                 resolved.append((author, media_ts, (n,)))
-                expected = max(expected, n + 1)
+                used.add(n)
                 corrected += 1
             continue
 
@@ -136,7 +146,8 @@ def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
     mapping = load_mapping(mapping_csv)
     db = Database(db_path)
 
-    resolved, corrected, unresolved = reconcile(entries, expected=db.next_expected_number())
+    already_used = {r["number"] for r in db.conn.execute("SELECT number FROM beers").fetchall()}
+    resolved, corrected, unresolved = reconcile(entries, already_used=already_used)
 
     imported = duplicates = 0
     seen_authors: set[str] = set()
