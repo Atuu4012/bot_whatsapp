@@ -26,8 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.db import Beer, Database, Member  # noqa: E402
 from src.importer import parse_export  # noqa: E402
-
-_THOUSANDS_SEP = (" ", " ", ".", "#")
+from src.validator import parse_numbers  # noqa: E402
 
 
 def load_mapping(csv_path: str) -> dict[str, str]:
@@ -45,13 +44,6 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "inconnu"
 
 
-def _extract_number(caption: str) -> int | None:
-    cleaned = caption.strip()
-    for ch in _THOUSANDS_SEP:
-        cleaned = cleaned.replace(ch, "")
-    return int(cleaned) if cleaned.isdigit() else None
-
-
 def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
     entries = [e for e in parse_export(export_path) if e.has_image and e.caption]
     mapping = load_mapping(mapping_csv)
@@ -62,8 +54,10 @@ def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
 
     for entry in entries:
         seen_authors.add(entry.author)
-        number = _extract_number(entry.caption)
-        if number is None:
+        # Une légende peut lister plusieurs numéros ("658 659 660") quand
+        # quelqu'un rattrape plusieurs bières d'un coup dans une photo.
+        numbers = parse_numbers(entry.caption)
+        if numbers is None:
             skipped += 1
             continue
 
@@ -71,15 +65,16 @@ def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
         if db.get_member(jid) is None:
             db.save_member(Member(jid=jid, display_name=entry.author, joined_at=entry.ts))
 
-        already_taken = db.conn.execute(
-            "SELECT 1 FROM beers WHERE number = ?", (number,)
-        ).fetchone()
-        if already_taken:
-            duplicates += 1
-            continue
+        for number in numbers:
+            already_taken = db.conn.execute(
+                "SELECT 1 FROM beers WHERE number = ?", (number,)
+            ).fetchone()
+            if already_taken:
+                duplicates += 1
+                continue
 
-        db.insert_beer(Beer(number=number, jid=jid, posted_at=entry.ts, source="import"))
-        imported += 1
+            db.insert_beer(Beer(number=number, jid=jid, posted_at=entry.ts, source="import"))
+            imported += 1
 
     print(
         f"{imported} bières importées, {duplicates} doublons ignorés "
