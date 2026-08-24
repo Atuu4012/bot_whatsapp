@@ -57,3 +57,11 @@ def test_correct_number_returns_ok_verdict():
     verdict = validate(img_msg("651"), 651)
     assert verdict.ok is True
     assert verdict.number == 651
+
+
+def test_multiple_numbers_glued_by_a_space_are_not_merged():
+    # Vu sur les vraies données : quelqu'un rattrape son retard avec une
+    # légende "658 659 660". Ça ne doit jamais devenir le nombre 658659660.
+    verdict = validate(img_msg("658 659 660"), 658)
+    assert verdict.ok is False
+    assert verdict.reason == "CAPTION_NOT_NUMERIC"

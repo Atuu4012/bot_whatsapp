@@ -1,4 +1,4 @@
-"""Règles de conformité d'un message : image + légende = numéro attendu."""
+"""Regles de conformite d'un message : image + legende = numero attendu."""
 
 from __future__ import annotations
 
@@ -6,10 +6,17 @@ from dataclasses import dataclass
 
 from src.gateway import IncomingMessage
 
-# Caractères tolérés autour du nombre : espace normal, espace insécable
-# (U+00A0), espace fine insécable (U+202F), point (séparateur de milliers),
-# et un '#' devant le numéro (courant sur les exports WhatsApp réels : "#651").
-_STRIP_CHARS = (" ", " ", " ", ".", "#")
+# Caracteres tolerés a l'interieur du nombre : espace insecable (U+00A0),
+# espace fine insecable (U+202F) et point, utilises comme separateurs de
+# milliers ("1 000", "1.000"), et un '#' devant le numero (courant sur
+# les exports WhatsApp reels : "#651").
+#
+# On ne retire volontairement PAS l'espace ASCII normal : sur les vraies
+# donnees, des legendes comme "658 659 660" (plusieurs numeros colles par
+# un humain qui rattrape son retard) existent bien. Les fusionner en un
+# seul nombre serait un faux positif silencieux -- on prefere les rejeter
+# comme CAPTION_NOT_NUMERIC.
+_STRIP_CHARS = (" ", " ", ".", "#")
 
 
 @dataclass
