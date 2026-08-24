@@ -11,18 +11,18 @@ DEFAULT_TIERS = {1: timedelta(hours=24), 2: timedelta(days=7)}  # 3+ : retour ma
 DEFAULT_PRESCRIPTION = timedelta(days=90)
 
 REASONS = {
-    "NOT_AN_IMAGE": "ton message ne contenait pas de photo",
-    "NO_CAPTION": "ta photo n'avait pas de légende",
+    "NOT_AN_IMAGE": "ton message ne contenait pas de photo, il faut une preuve à l'appui !",
+    "NO_CAPTION": "ta photo n'avait pas de légende, il faut le numéro avec !",
     "CAPTION_NOT_NUMERIC": (
-        "ta légende n'a pas de numéro clair, ou beaucoup trop de texte autour"
+        "Il ne faut pas écrire de texte, on ne raconte pas sa vie ici, juste le numéro de la bière. Pour parler il y a le groupe général."
     ),
-    "WRONG_NUMBER": "le numéro ne suivait pas le compteur",
+    "WRONG_NUMBER": "le numéro ne suivait pas le compteur, on ne peut pas tricher !",
 }
 
 TIER_NOTICES = {
     1: "C'est ton premier avertissement. Tu seras réintégré automatiquement dans 24 h.",
     2: "Deuxième infraction : retour automatique dans 7 jours.",
-    3: "Troisième infraction. Le retour se fait désormais sur validation d'un admin.",
+    3: "Troisième infraction. Si tu veux revenir dans le groupe, il faudra faire une demande et attendre qu'un admin valide ton retour.",
 }
 
 

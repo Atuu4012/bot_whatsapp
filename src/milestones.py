@@ -6,7 +6,7 @@ from datetime import datetime
 
 from src.db import Database
 
-MILESTONES = [1000, 2500, 5000, 7500, 10000, 15000, 20000, 25000, 50000]
+MILESTONES = [1000, 2000, 5000, 7500, 10000, 15000, 20000, 25000, 50000, 75000, 100000, 150000, 200000, 250000, 500000, 750000, 1000000]
 ROUND_EVERY = 500  # célèbre aussi tous les 500, en plus des paliers ci-dessus
 
 
@@ -21,10 +21,10 @@ def build_celebration_message(n: int, jid: str, db: Database) -> str:
     name = (member.push_name or member.display_name or jid) if member else jid
 
     return (
-        f"🎉 LA {n}e 🎉\n\n"
-        f"Marquée par {name}.\n"
-        f"Top 3 : {top3}\n\n"
-        "Santé 🍻"
+        f"🎉 LA {n}e bière a été bu 🎉\n\n"
+        f"Par {name}.\n Bravo à tous 🍻\n\n"
+        f"Top 3 des plus gros buveurs : {top3}\n\n"
+        "Santé à vous 🍻"
     )
 
 
