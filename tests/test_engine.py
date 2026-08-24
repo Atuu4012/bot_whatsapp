@@ -134,6 +134,42 @@ def test_admin_is_never_kicked_but_infraction_is_logged():
     assert len(db.infractions_for("admin@s.whatsapp.net")) == 1
 
 
+def test_multi_number_caption_inserts_one_beer_per_number():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=False, clock=FakeClock(datetime(2026, 1, 1)))
+
+    multi = IncomingMessage(
+        message_id="m1", jid="a@s.whatsapp.net", push_name="Karl",
+        has_image=True, caption="1 2 3", timestamp=datetime(2026, 1, 1),
+    )
+    result = eng.handle(multi)
+
+    assert result == Action.ACCEPTED
+    assert db.next_expected_number() == 4
+    assert gw.kicked == []
+
+
+def test_multi_number_caption_can_cross_a_milestone():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=False, clock=FakeClock(datetime(2026, 1, 1)))
+
+    for i in range(1, 499):
+        eng.handle(msg("a@s.whatsapp.net", i, message_id=f"m{i}"))
+
+    catch_up = IncomingMessage(
+        message_id="catchup", jid="a@s.whatsapp.net", push_name="Karl",
+        has_image=True, caption="499 500 501", timestamp=datetime(2026, 1, 1),
+    )
+    result = eng.handle(catch_up)
+
+    assert result == Action.ACCEPTED
+    assert db.next_expected_number() == 502
+    assert len(gw.group_msgs) == 1
+    assert "500" in gw.group_msgs[0]
+
+
 def test_milestone_celebrated_on_acceptance():
     db = Database(":memory:")
     gw = FakeGateway()

@@ -59,9 +59,38 @@ def test_correct_number_returns_ok_verdict():
     assert verdict.number == 651
 
 
-def test_multiple_numbers_glued_by_a_space_are_not_merged():
-    # Vu sur les vraies données : quelqu'un rattrape son retard avec une
-    # légende "658 659 660". Ça ne doit jamais devenir le nombre 658659660.
-    verdict = validate(img_msg("658 659 660"), 658)
+@pytest.mark.parametrize(
+    "caption",
+    ["658 659 660", "658, 659, 660", "658-659-660", "658,659,660"],
+)
+def test_multiple_consecutive_numbers_starting_at_expected_are_accepted(caption):
+    # Vu sur les vraies données : quelqu'un rattrape plusieurs bières d'un
+    # coup dans une seule photo. C'est autorisé.
+    verdict = validate(img_msg(caption), 658)
+    assert verdict.ok is True
+    assert verdict.numbers == (658, 659, 660)
+
+
+def test_multiple_numbers_not_starting_at_expected_are_rejected():
+    verdict = validate(img_msg("659 660 661"), 658)
+    assert verdict.ok is False
+    assert verdict.reason == "WRONG_NUMBER"
+    assert verdict.number == 659
+
+
+def test_multiple_numbers_with_a_gap_are_rejected():
+    # "181, 183" (182 manquant) n'est pas une séquence valide.
+    verdict = validate(img_msg("181, 183"), 181)
+    assert verdict.ok is False
+    assert verdict.reason == "WRONG_NUMBER"
+
+
+def test_multiple_numbers_with_extra_text_are_rejected():
+    verdict = validate(img_msg("177 - 180 la prochaine"), 177)
     assert verdict.ok is False
     assert verdict.reason == "CAPTION_NOT_NUMERIC"
+
+
+def test_single_number_verdict_still_carries_numbers_tuple():
+    verdict = validate(img_msg("651"), 651)
+    assert verdict.numbers == (651,)

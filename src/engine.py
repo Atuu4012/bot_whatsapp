@@ -72,16 +72,20 @@ class Engine:
         verdict = validate(msg, expected)
 
         if verdict.ok:
-            self.db.insert_beer(
-                Beer(
-                    number=verdict.number,
-                    jid=msg.jid,
-                    message_id=msg.message_id,
-                    posted_at=now,
-                    source="live",
+            # Une légende peut lister plusieurs numéros consécutifs
+            # ("658 659 660") quand plusieurs bières sont rattrapées d'un
+            # coup dans une seule photo : une ligne par numéro.
+            for number in verdict.numbers:
+                self.db.insert_beer(
+                    Beer(
+                        number=number,
+                        jid=msg.jid,
+                        message_id=msg.message_id,
+                        posted_at=now,
+                        source="live",
+                    )
                 )
-            )
-            milestones.check_and_celebrate(verdict.number, msg.jid, self.db, self.gateway, self.group, now)
+                milestones.check_and_celebrate(number, msg.jid, self.db, self.gateway, self.group, now)
             return Action.ACCEPTED
 
         if self._is_collision(verdict, expected, now):
