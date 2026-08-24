@@ -45,6 +45,8 @@ class Engine:
     admin_jids: frozenset[str] = frozenset()
     bot_jid: str | None = None
     grace_period: timedelta = DEFAULT_GRACE_PERIOD
+    tiers: dict[int, timedelta] | None = None
+    prescription: timedelta | None = None
 
     def __post_init__(self) -> None:
         if self.clock is None:
@@ -90,7 +92,8 @@ class Engine:
             return Action.ADMIN_EXEMPT
 
         moderation.moderate(
-            self.db, self.gateway, self.group, msg.jid, verdict.reason, msg.caption, now, self.dry_run
+            self.db, self.gateway, self.group, msg.jid, verdict.reason, msg.caption, now, self.dry_run,
+            tiers=self.tiers, prescription=self.prescription,
         )
         return Action.SANCTIONED
 

@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 from src.db import Database, Member
 from src.gateway import AddParticipantError, WhatsAppGateway
 
-TIERS = {1: timedelta(hours=24), 2: timedelta(days=7)}  # 3+ : retour manuel (None)
-PRESCRIPTION = timedelta(days=90)
+DEFAULT_TIERS = {1: timedelta(hours=24), 2: timedelta(days=7)}  # 3+ : retour manuel (None)
+DEFAULT_PRESCRIPTION = timedelta(days=90)
 
 REASONS = {
     "NOT_AN_IMAGE": "ton message ne contenait pas de photo",
@@ -40,13 +40,22 @@ def build_kick_dm(reason: str, kick_count: int) -> str:
     )
 
 
-def apply_sanction(member: Member, now: datetime, dry_run: bool) -> Member:
+def apply_sanction(
+    member: Member,
+    now: datetime,
+    dry_run: bool,
+    tiers: dict[int, timedelta] | None = None,
+    prescription: timedelta | None = None,
+) -> Member:
     """Calcule l'escalade. En dry run, le compteur avance (pour tester la
     logique de tiers) mais `banned_until` n'est jamais posé : rien de réel
     ne doit restreindre le membre tant que le mode observation est actif.
     """
 
-    if member.last_infraction_at and now - member.last_infraction_at > PRESCRIPTION:
+    tiers = DEFAULT_TIERS if tiers is None else tiers
+    prescription = DEFAULT_PRESCRIPTION if prescription is None else prescription
+
+    if member.last_infraction_at and now - member.last_infraction_at > prescription:
         member.kick_count = 0
 
     member.kick_count += 1
@@ -55,7 +64,7 @@ def apply_sanction(member: Member, now: datetime, dry_run: bool) -> Member:
     if dry_run:
         member.banned_until = None
     else:
-        duration = TIERS.get(member.kick_count)
+        duration = tiers.get(member.kick_count)
         member.banned_until = now + duration if duration else None
 
     return member
@@ -70,6 +79,8 @@ def moderate(
     raw_content: str | None,
     now: datetime,
     dry_run: bool,
+    tiers: dict[int, timedelta] | None = None,
+    prescription: timedelta | None = None,
 ) -> Member:
     """Ordre : (1) log l'infraction, (2) DM, (3) kick.
 
@@ -79,7 +90,7 @@ def moderate(
     """
 
     member = db.get_member(jid) or Member(jid=jid)
-    apply_sanction(member, now, dry_run)
+    apply_sanction(member, now, dry_run, tiers, prescription)
 
     action = "dry_run" if dry_run else "kicked"
     db.insert_infraction(jid, reason, raw_content, action, now)
