@@ -32,6 +32,7 @@ class IncomingMessage:
     caption: str | None
     timestamp: datetime
     is_system: bool = False
+    is_revoked: bool = False  # message supprimé par son auteur (événement "revoke")
 
 
 class WhatsAppGateway(Protocol):

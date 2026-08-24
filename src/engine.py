@@ -24,6 +24,7 @@ class Action(Enum):
     IGNORED_BOT = auto()
     IGNORED_DUPLICATE = auto()
     IGNORED_COLLISION = auto()
+    IGNORED_REVOKED = auto()
     ADMIN_EXEMPT = auto()
     SANCTIONED = auto()
 
@@ -55,6 +56,12 @@ class Engine:
     def handle(self, msg: IncomingMessage) -> Action:
         if msg.is_system:
             return Action.IGNORED_SYSTEM
+
+        if msg.is_revoked:
+            # L'auteur a supprimé son propre message (ex: il a posté un
+            # numéro en conflit puis corrige avec un nouveau message). Rien
+            # à traiter : ce n'est ni une bière ni une infraction.
+            return Action.IGNORED_REVOKED
 
         if self.bot_jid and msg.jid == self.bot_jid:
             return Action.IGNORED_BOT
@@ -92,7 +99,9 @@ class Engine:
             return Action.IGNORED_COLLISION
 
         if msg.jid in self.admin_jids:
-            self.db.insert_infraction(msg.jid, verdict.reason, msg.caption, "warned", now)
+            # Les admins ont le droit de parler librement dans le groupe :
+            # un message non conforme de leur part n'est même pas une
+            # infraction, juste un message ignoré par le compteur.
             return Action.ADMIN_EXEMPT
 
         moderation.moderate(

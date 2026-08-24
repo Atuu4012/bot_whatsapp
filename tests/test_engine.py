@@ -119,7 +119,9 @@ def test_bot_own_messages_ignored():
     assert result == Action.IGNORED_BOT
 
 
-def test_admin_is_never_kicked_but_infraction_is_logged():
+def test_admin_is_never_kicked_and_no_infraction_is_logged():
+    # Les admins ont le droit de parler librement : un message non conforme
+    # de leur part n'est ni sanctionné ni même journalisé comme infraction.
     db = Database(":memory:")
     gw = FakeGateway()
     eng = Engine(
@@ -131,7 +133,71 @@ def test_admin_is_never_kicked_but_infraction_is_logged():
 
     assert result == Action.ADMIN_EXEMPT
     assert gw.kicked == []
-    assert len(db.infractions_for("admin@s.whatsapp.net")) == 1
+    assert gw.dms == []
+    assert len(db.infractions_for("admin@s.whatsapp.net")) == 0
+
+
+def test_admin_beer_photos_are_still_counted():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    eng = Engine(
+        db=db, gateway=gw, group=GROUP, dry_run=False,
+        clock=FakeClock(datetime(2026, 1, 1)), admin_jids=frozenset({"admin@s.whatsapp.net"}),
+    )
+
+    result = eng.handle(msg("admin@s.whatsapp.net", 1))
+
+    assert result == Action.ACCEPTED
+    assert db.next_expected_number() == 2
+
+
+def test_revoked_message_is_ignored_not_sanctioned():
+    # Quelqu'un poste un numéro en conflit, supprime son message : ce n'est
+    # ni une bière ni une infraction, juste un message qui n'a plus lieu d'être.
+    db = Database(":memory:")
+    gw = FakeGateway()
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=False, clock=FakeClock(datetime(2026, 1, 1)))
+
+    revoked = IncomingMessage(
+        message_id="m1", jid="a@s.whatsapp.net", push_name="X",
+        has_image=False, caption=None, timestamp=datetime(2026, 1, 1), is_revoked=True,
+    )
+    result = eng.handle(revoked)
+
+    assert result == Action.IGNORED_REVOKED
+    assert gw.kicked == []
+    assert gw.dms == []
+    assert db.infractions_for("a@s.whatsapp.net") == []
+
+
+def test_collision_then_delete_and_repost_with_correct_number_is_accepted():
+    """Reproduit le scénario réel : A poste 1, B poste 1 en même temps
+    (collision, ignorée), B supprime son message puis reposte 2 (correct)."""
+    db = Database(":memory:")
+    gw = FakeGateway()
+    clock = FakeClock(datetime(2026, 1, 1))
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=False, clock=clock)
+
+    eng.handle(msg("a@s.whatsapp.net", 1, message_id="a1"))
+    clock.advance(timedelta(seconds=5))
+    collision_result = eng.handle(msg("b@s.whatsapp.net", 1, message_id="b1"))
+    assert collision_result == Action.IGNORED_COLLISION
+
+    # B supprime son message "1" : événement de suppression, rien à faire.
+    clock.advance(timedelta(seconds=2))
+    revoke_result = eng.handle(IncomingMessage(
+        message_id="b1", jid="b@s.whatsapp.net", push_name="B",
+        has_image=False, caption=None, timestamp=clock.now(), is_revoked=True,
+    ))
+    assert revoke_result == Action.IGNORED_REVOKED
+
+    # B reposte avec le bon numéro : accepté normalement.
+    clock.advance(timedelta(seconds=3))
+    repost_result = eng.handle(msg("b@s.whatsapp.net", 2, message_id="b2"))
+
+    assert repost_result == Action.ACCEPTED
+    assert gw.kicked == []
+    assert db.next_expected_number() == 3
 
 
 def test_multi_number_caption_inserts_one_beer_per_number():
