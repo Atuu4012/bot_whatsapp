@@ -7,11 +7,15 @@ Politique de réconciliation (§6.4) :
   (ordre chronologique de l'export), on ignore les suivants.
 - Trous dans la séquence : on les laisse, on ne renumérote jamais.
 
-Une photo dont la légende ne correspond pas au compteur attendu (légende
-oubliée, tapée de travers, corrigée après coup...) est réconciliée avec le
-message texte qui suit immédiatement, du même auteur, dans les
-FOLLOWUP_WINDOW minutes — même logique que le rattrapage en direct
-(Engine._try_complete_pending).
+La vraie vie est plus désordonnée qu'« une photo, une légende » : sur les
+vraies données, le numéro arrive parfois avant la pièce jointe, parfois
+après ; plusieurs photos sans légende sont parfois suivies d'un seul message
+qui liste tous les numéros ("563,564") ; un message sans rapport peut
+s'intercaler ; l'auteur "attache" parfois une vidéo plutôt qu'une photo mais
+le numéro qui l'accompagne compte quand même. `_reconcile` associe, pour
+chaque auteur indépendamment, les pièces jointes en attente et les nombres
+en attente dans les FOLLOWUP_WINDOW minutes qui suivent — même principe que
+le rattrapage en direct (Engine._try_complete_pending), en plus général.
 
 Le mapping nom_export -> jid vient d'un CSV généré par link_members.py.
 Un auteur non mappé reçoit un jid provisoire "<nom>@unmapped.local", listé
@@ -26,12 +30,14 @@ from __future__ import annotations
 import csv
 import re
 import sys
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.db import Beer, Database, Member  # noqa: E402
-from src.importer import FOLLOWUP_WINDOW, parse_export  # noqa: E402
+from src.importer import FOLLOWUP_WINDOW, ImportedEntry, parse_export  # noqa: E402
 from src.validator import parse_numbers  # noqa: E402
 
 
@@ -50,50 +56,96 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "inconnu"
 
 
+def _prune(queue: list, now: datetime, ts_of) -> None:
+    while queue and now - ts_of(queue[0]) > FOLLOWUP_WINDOW:
+        queue.pop(0)
+
+
+def reconcile(
+    entries: list[ImportedEntry], expected: int = 1
+) -> tuple[list[tuple[str, datetime, tuple[int, ...]]], int, int]:
+    """Associe pièces jointes et numéros dispersés en soumissions résolues.
+
+    `expected` est le premier numéro attendu (typiquement `db.next_expected_number()`
+    pour reprendre après un import partiel). Retourne (soumissions,
+    nb_corrigées_par_reconciliation, nb_non_résolues). Une soumission est
+    (auteur, horodatage, numéros) — plusieurs numéros si une légende en
+    listait plusieurs ("658 659 660").
+    """
+
+    pending_media: dict[str, list[datetime]] = defaultdict(list)
+    pending_numbers: dict[str, list[tuple[datetime, tuple[int, ...]]]] = defaultdict(list)
+    resolved: list[tuple[str, datetime, tuple[int, ...]]] = []
+    corrected = 0
+    # `expected` n'avance qu'au fil des soumissions résolues, dans l'ordre
+
+    for entry in entries:
+        author = entry.author
+        _prune(pending_media[author], entry.ts, ts_of=lambda x: x)
+        _prune(pending_numbers[author], entry.ts, ts_of=lambda x: x[0])
+
+        if entry.has_attachment:
+            numbers = parse_numbers(entry.caption) if entry.caption else None
+
+            if numbers is not None and numbers[0] == expected:
+                resolved.append((author, entry.ts, numbers))
+                expected += len(numbers)
+                continue
+
+            # Légende absente/fausse : un numéro était peut-être déjà
+            # arrivé avant la pièce jointe (l'auteur annonce, puis envoie).
+            if pending_numbers[author]:
+                _, waiting_numbers = pending_numbers[author].pop(0)
+                resolved.append((author, entry.ts, waiting_numbers))
+                expected += len(waiting_numbers)
+                corrected += 1
+                continue
+
+            pending_media[author].append(entry.ts)
+            continue
+
+        text = (entry.body or "").strip()
+        numbers = parse_numbers(text) if text else None
+        if numbers is None:
+            continue  # bavardage sans numéro : ignoré, ne casse pas une attente en cours
+
+        if pending_media[author]:
+            # Une liste de numéros peut couvrir plusieurs photos en attente
+            # d'affilée ("563,564" pour deux photos sans légende).
+            remaining = list(numbers)
+            while remaining and pending_media[author]:
+                media_ts = pending_media[author].pop(0)
+                n = remaining.pop(0)
+                resolved.append((author, media_ts, (n,)))
+                expected = max(expected, n + 1)
+                corrected += 1
+            continue
+
+        # Pas de pièce jointe en attente : le numéro est peut-être annoncé
+        # avant que la photo n'arrive.
+        pending_numbers[author].append((entry.ts, numbers))
+
+    unresolved = sum(len(q) for q in pending_media.values()) + sum(
+        len(q) for q in pending_numbers.values()
+    )
+    return resolved, corrected, unresolved
+
+
 def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
     entries = [e for e in parse_export(export_path) if not e.is_system]
     mapping = load_mapping(mapping_csv)
     db = Database(db_path)
 
-    imported = duplicates = skipped = corrected = 0
+    resolved, corrected, unresolved = reconcile(entries, expected=db.next_expected_number())
+
+    imported = duplicates = 0
     seen_authors: set[str] = set()
-    n = len(entries)
-    i = 0
 
-    while i < n:
-        entry = entries[i]
-        i += 1
-        if not entry.has_image:
-            continue
-
-        seen_authors.add(entry.author)
-        expected = db.next_expected_number()
-        numbers = parse_numbers(entry.caption) if entry.caption else None
-
-        # Légende absente, illisible ou qui ne correspond pas au compteur :
-        # on regarde si le message suivant (même auteur, peu après) corrige.
-        if (numbers is None or numbers[0] != expected) and i < n:
-            followup = entries[i]
-            if (
-                followup.author == entry.author
-                and not followup.has_image
-                and followup.body.strip()
-                and followup.ts - entry.ts <= FOLLOWUP_WINDOW
-            ):
-                followup_numbers = parse_numbers(followup.body.strip())
-                if followup_numbers is not None:
-                    if numbers is not None:
-                        corrected += 1
-                    numbers = followup_numbers
-                    i += 1  # le message de correction est consommé
-
-        if numbers is None:
-            skipped += 1
-            continue
-
-        jid = mapping.get(entry.author) or f"{_slug(entry.author)}@unmapped.local"
+    for author, ts, numbers in resolved:
+        seen_authors.add(author)
+        jid = mapping.get(author) or f"{_slug(author)}@unmapped.local"
         if db.get_member(jid) is None:
-            db.save_member(Member(jid=jid, display_name=entry.author, joined_at=entry.ts))
+            db.save_member(Member(jid=jid, display_name=author, joined_at=ts))
 
         for number in numbers:
             already_taken = db.conn.execute(
@@ -103,13 +155,14 @@ def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
                 duplicates += 1
                 continue
 
-            db.insert_beer(Beer(number=number, jid=jid, posted_at=entry.ts, source="import"))
+            db.insert_beer(Beer(number=number, jid=jid, posted_at=ts, source="import"))
             imported += 1
 
     print(
         f"{imported} bières importées, {duplicates} doublons ignorés "
-        f"(premier posté conservé), {skipped} légendes non numériques ignorées, "
-        f"{corrected} corrigées par le message suivant"
+        f"(premier posté conservé), {corrected} résolues par réconciliation "
+        f"(numéro avant/après la photo, ou liste sur plusieurs photos), "
+        f"{unresolved} pièces jointes/numéros jamais réconciliés"
     )
     print(f"compteur de référence après import : {db.next_expected_number() - 1}")
 

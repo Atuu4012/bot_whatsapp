@@ -28,7 +28,7 @@ au bout de 90 jours sans récidive.
 
 - ✅ **Phase locale** — tout ce qui se teste sans connexion WhatsApp : base de
   données, validateur, moteur de décision, modération, paliers, stats,
-  parsing de l'export, import de l'historique. 87 tests, tous verts.
+  parsing de l'export, import de l'historique. 92 tests, tous verts.
 - ⏳ **Phase WhatsApp** — connexion réelle via [neonize](https://github.com/krypton-byte/neonize)
   (protocole whatsmeow). Bloquée sur la SIM dédiée et un groupe de test :
   voir `src/gateway.py` (`NeonizeGateway`) et le TODO dans `src/main.py`.
@@ -79,7 +79,7 @@ src/
 ├── stats.py         # classements, séries, récap hebdo
 └── importer.py       # parsing des exports WhatsApp
 
-tests/               # 87 tests, aucun ne nécessite de connexion WhatsApp
+tests/               # 92 tests, aucun ne nécessite de connexion WhatsApp
 scripts/             # import_history, link_members, replay, backup
 ```
 

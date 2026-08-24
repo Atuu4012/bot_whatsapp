@@ -74,7 +74,8 @@ class ImportedEntry:
     ts: datetime
     author: str
     body: str
-    has_image: bool
+    has_image: bool  # spécifiquement une photo (pas vidéo/gif/audio/doc)
+    has_attachment: bool  # une pièce jointe quelconque, ou média-omis
     caption: str | None
     is_system: bool
 
@@ -135,12 +136,15 @@ def _finalize(raw_entry: dict) -> ImportedEntry:
     attached_match = _ATTACHED_RE.search(body)
     if attached_match:
         filename = attached_match.group(1)
+        has_attachment = True
         has_image = bool(_IS_PHOTO_ATTACHMENT_RE.search(filename))
         caption = (body[: attached_match.start()].strip() or None) if has_image else None
     elif _MEDIA_OMITTED_RE.match(body.strip()):
+        has_attachment = True
         has_image = True
         caption = None
     else:
+        has_attachment = False
         has_image = False
         caption = None
 
@@ -149,6 +153,7 @@ def _finalize(raw_entry: dict) -> ImportedEntry:
         author=author,
         body=body,
         has_image=has_image,
+        has_attachment=has_attachment,
         caption=caption,
         is_system=is_system,
     )
