@@ -29,6 +29,7 @@ class Config:
     session_path: str
     dry_run: bool
     grace_period_seconds: int
+    caption_grace_period_seconds: int
     tier1_hours: int
     tier2_days: int
     prescription_days: int
@@ -43,6 +44,7 @@ def load_config(env_path: str | Path | None = None) -> Config:
         session_path=os.environ.get("SESSION_PATH", "data/session.db"),
         dry_run=_as_bool(os.environ.get("DRY_RUN"), True),
         grace_period_seconds=int(os.environ.get("GRACE_PERIOD_SECONDS", "90")),
+        caption_grace_period_seconds=int(os.environ.get("CAPTION_GRACE_PERIOD_SECONDS", "300")),
         tier1_hours=int(os.environ.get("TIER1_HOURS", "24")),
         tier2_days=int(os.environ.get("TIER2_DAYS", "7")),
         prescription_days=int(os.environ.get("PRESCRIPTION_DAYS", "90")),

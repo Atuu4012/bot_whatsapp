@@ -248,3 +248,115 @@ def test_milestone_celebrated_on_acceptance():
     eng.handle(msg("a@s.whatsapp.net", 500, message_id="m500"))
     assert len(gw.group_msgs) == 1
     assert "500" in gw.group_msgs[0]
+
+
+def _photo_no_caption(jid, message_id, ts):
+    return IncomingMessage(
+        message_id=message_id, jid=jid, push_name="X",
+        has_image=True, caption=None, timestamp=ts,
+    )
+
+
+def _text(jid, text, message_id, ts):
+    return IncomingMessage(
+        message_id=message_id, jid=jid, push_name="X",
+        has_image=False, caption=text, timestamp=ts,
+    )
+
+
+def test_photo_without_caption_awaits_followup_instead_of_being_sanctioned():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=False, clock=FakeClock(datetime(2026, 1, 1)))
+
+    result = eng.handle(_photo_no_caption("a@s.whatsapp.net", "p1", datetime(2026, 1, 1)))
+
+    assert result == Action.AWAITING_CAPTION
+    assert gw.kicked == []
+    assert db.infractions_for("a@s.whatsapp.net") == []
+
+
+def test_number_sent_right_after_photo_completes_it():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    clock = FakeClock(datetime(2026, 1, 1, 12, 0, 0))
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=False, clock=clock)
+
+    eng.handle(_photo_no_caption("a@s.whatsapp.net", "p1", clock.now()))
+    clock.advance(timedelta(seconds=20))
+    result = eng.handle(_text("a@s.whatsapp.net", "1", "t1", clock.now()))
+
+    assert result == Action.ACCEPTED
+    assert gw.kicked == []
+    assert db.next_expected_number() == 2
+    # La bière est rattachée à la photo d'origine, pas au message texte.
+    beer = db.last_beer()
+    assert beer.message_id == "p1"
+
+
+def test_followup_outside_grace_period_does_not_complete_and_photo_gets_swept():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    clock = FakeClock(datetime(2026, 1, 1, 12, 0, 0))
+    eng = Engine(
+        db=db, gateway=gw, group=GROUP, dry_run=False, clock=clock,
+        caption_grace_period=timedelta(minutes=5),
+    )
+
+    eng.handle(_photo_no_caption("a@s.whatsapp.net", "p1", clock.now()))
+    clock.advance(timedelta(minutes=10))
+
+    # Trop tard : le sweep périodique sanctionne la photo laissée sans suite.
+    swept = eng.sweep_pending_captions(clock.now())
+    assert swept == ["a@s.whatsapp.net"]
+    assert gw.kicked == ["a@s.whatsapp.net"]
+
+
+def test_non_matching_followup_text_is_sanctioned_like_any_other_message():
+    # Le suivi ne donne pas un blanc-seing : un texte qui ne complète pas la
+    # photo en attente reste un message hors-sujet, sanctionné comme un
+    # autre. La photo en attente est nettoyée dans la foulée (pas de double
+    # sanction au prochain sweep).
+    db = Database(":memory:")
+    gw = FakeGateway()
+    clock = FakeClock(datetime(2026, 1, 1, 12, 0, 0))
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=False, clock=clock)
+
+    eng.handle(_photo_no_caption("a@s.whatsapp.net", "p1", clock.now()))
+    clock.advance(timedelta(seconds=5))
+    result = eng.handle(_text("a@s.whatsapp.net", "999", "t1", clock.now()))
+
+    assert result == Action.SANCTIONED
+    assert gw.kicked == ["a@s.whatsapp.net"]
+
+    swept = eng.sweep_pending_captions(clock.now() + timedelta(hours=1))
+    assert swept == []
+
+
+def test_admin_photo_without_caption_is_exempt_not_pending():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    eng = Engine(
+        db=db, gateway=gw, group=GROUP, dry_run=False, clock=FakeClock(datetime(2026, 1, 1)),
+        admin_jids=frozenset({"admin@s.whatsapp.net"}),
+    )
+
+    result = eng.handle(_photo_no_caption("admin@s.whatsapp.net", "p1", datetime(2026, 1, 1)))
+
+    assert result == Action.ADMIN_EXEMPT
+    swept = eng.sweep_pending_captions(datetime(2026, 1, 1) + timedelta(hours=1))
+    assert swept == []  # jamais mis en attente, donc rien à sanctionner plus tard
+
+
+def test_second_uncaptioned_photo_while_one_already_pending_is_sanctioned():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    clock = FakeClock(datetime(2026, 1, 1, 12, 0, 0))
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=False, clock=clock)
+
+    eng.handle(_photo_no_caption("a@s.whatsapp.net", "p1", clock.now()))
+    clock.advance(timedelta(seconds=5))
+    result = eng.handle(_photo_no_caption("a@s.whatsapp.net", "p2", clock.now()))
+
+    assert result == Action.SANCTIONED
+    assert gw.kicked == ["a@s.whatsapp.net"]

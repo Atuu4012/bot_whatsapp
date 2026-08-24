@@ -4,7 +4,8 @@ from src.config import load_config
 def test_defaults_when_env_file_absent(tmp_path, monkeypatch):
     for key in (
         "BOT_GROUP_JID", "ADMIN_JIDS", "DB_PATH", "SESSION_PATH", "DRY_RUN",
-        "GRACE_PERIOD_SECONDS", "TIER1_HOURS", "TIER2_DAYS", "PRESCRIPTION_DAYS",
+        "GRACE_PERIOD_SECONDS", "CAPTION_GRACE_PERIOD_SECONDS",
+        "TIER1_HOURS", "TIER2_DAYS", "PRESCRIPTION_DAYS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -14,6 +15,7 @@ def test_defaults_when_env_file_absent(tmp_path, monkeypatch):
     assert cfg.db_path == "data/beerbot.db"
     assert cfg.admin_jids == frozenset()
     assert cfg.grace_period_seconds == 90
+    assert cfg.caption_grace_period_seconds == 300
 
 
 def test_reads_values_from_env_file(tmp_path, monkeypatch):

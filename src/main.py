@@ -35,12 +35,15 @@ def build_engine(config: Config, db: Database, gateway: WhatsAppGateway) -> Engi
         dry_run=config.dry_run,
         admin_jids=config.admin_jids,
         grace_period=timedelta(seconds=config.grace_period_seconds),
+        caption_grace_period=timedelta(seconds=config.caption_grace_period_seconds),
         tiers={1: timedelta(hours=config.tier1_hours), 2: timedelta(days=config.tier2_days)},
         prescription=timedelta(days=config.prescription_days),
     )
 
 
-def start_scheduler(db: Database, gateway: WhatsAppGateway, config: Config) -> BackgroundScheduler:
+def start_scheduler(
+    db: Database, gateway: WhatsAppGateway, config: Config, engine: Engine
+) -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
 
     # Balaie tous les banned_until expirés, pas seulement la dernière heure :
@@ -50,6 +53,14 @@ def start_scheduler(db: Database, gateway: WhatsAppGateway, config: Config) -> B
         "interval",
         hours=1,
         id="process_returns",
+    )
+    # Fréquent : la fenêtre de rattrapage "photo sans légende" ne dure que
+    # quelques minutes, il faut la balayer bien plus souvent que les bans.
+    scheduler.add_job(
+        lambda: engine.sweep_pending_captions(datetime.now()),
+        "interval",
+        minutes=1,
+        id="sweep_pending_captions",
     )
     scheduler.add_job(
         lambda: gateway.send_group(
@@ -75,7 +86,7 @@ def main() -> None:
     db = Database(config.db_path)
     gateway = NeonizeGateway(config.session_path)
     engine = build_engine(config, db, gateway)
-    start_scheduler(db, gateway, config)
+    start_scheduler(db, gateway, config, engine)
 
     # TODO (§13.4, phase WhatsApp) : brancher ici le handler d'événements
     # neonize réel. Il doit construire un IncomingMessage à partir de
