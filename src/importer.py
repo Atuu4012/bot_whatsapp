@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.gateway import IncomingMessage
 
@@ -28,7 +28,7 @@ _INVISIBLE_MARKS = re.compile("[‎‏]")
 _BRACKET_RE = re.compile(
     r"^\[(?P<date>\d{1,2}/\d{1,2}/\d{2,4}),\s*"
     r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?)\]\s"
-    r"(?P<author>[^:]+):\s(?P<body>.*)$"
+    r"(?P<author>[^:]+):\s?(?P<body>.*)$"
 )
 
 # Format « tiret » (Android, FR) :
@@ -36,13 +36,21 @@ _BRACKET_RE = re.compile(
 _DASH_RE = re.compile(
     r"^(?P<date>\d{1,2}/\d{1,2}/\d{2,4}),?\s"
     r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?)\s-\s"
-    r"(?P<author>[^:]+):\s(?P<body>.*)$"
+    r"(?P<author>[^:]+):\s?(?P<body>.*)$"
 )
 
-_ATTACHED_RE = re.compile(r"\s*<attached:[^>]*>\s*$", re.IGNORECASE)
+_ATTACHED_RE = re.compile(r"\s*<attached:\s*([^>]*)>\s*$", re.IGNORECASE)
+# WhatsApp nomme ses pièces jointes "<id>-TYPE-date-heure.ext" : le marqueur
+# TYPE (PHOTO/VIDEO/GIF/AUDIO/DOCUMENT...) est plus fiable que l'extension —
+# un GIF s'exporte par exemple en "...-GIF-....mp4", pas en .gif.
+_IS_PHOTO_ATTACHMENT_RE = re.compile(r"-PHOTO-|\.(jpe?g|png|webp)$", re.IGNORECASE)
 _MEDIA_OMITTED_RE = re.compile(
     r"^(<m[ée]dias?\s+omis>|image omitted|‎?image absente)$", re.IGNORECASE
 )
+
+# Fenêtre pendant laquelle un message texte juste après une photo sans
+# légende est considéré comme le numéro oublié plutôt qu'un message à part.
+FOLLOWUP_WINDOW = timedelta(minutes=5)
 
 _SYSTEM_MARKERS = (
     "created group", "a créé le groupe",
@@ -126,8 +134,9 @@ def _finalize(raw_entry: dict) -> ImportedEntry:
 
     attached_match = _ATTACHED_RE.search(body)
     if attached_match:
-        has_image = True
-        caption = body[: attached_match.start()].strip() or None
+        filename = attached_match.group(1)
+        has_image = bool(_IS_PHOTO_ATTACHMENT_RE.search(filename))
+        caption = (body[: attached_match.start()].strip() or None) if has_image else None
     elif _MEDIA_OMITTED_RE.match(body.strip()):
         has_image = True
         caption = None

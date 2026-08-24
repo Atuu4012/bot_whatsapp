@@ -54,6 +54,42 @@ def test_invisible_marks_are_stripped_from_author_and_body():
         assert "‎" not in entry.body
 
 
+def test_empty_message_does_not_swallow_the_next_line():
+    # Bug réel : "Barr:" (message vide, rien après les deux-points) était
+    # traité comme une continuation du message précédent au lieu d'une
+    # nouvelle entrée, ce qui cassait le <attached:...> de la photo "665".
+    entries = parse_export(FIXTURES / "sample_empty_message.txt")
+
+    photo_665 = next(e for e in entries if e.caption and "665" in e.caption)
+    assert photo_665.has_image is True
+    assert photo_665.caption == "665 bien fraiche"
+
+    empty_entries = [e for e in entries if e.author == "Barr" and e.body.strip() == ""]
+    assert len(empty_entries) == 1
+
+
+def test_video_and_gif_attachments_are_not_treated_as_photos():
+    entries = parse_export(FIXTURES / "sample_empty_message.txt")
+
+    video = next(e for e in entries if "VIDEO" in e.body)
+    gif = next(e for e in entries if "GIF" in e.body)
+
+    assert video.has_image is False
+    assert gif.has_image is False
+
+
+def test_photo_without_caption_followed_by_bare_number():
+    entries = parse_export(FIXTURES / "sample_empty_message.txt")
+
+    photo = next(e for e in entries if "00003820" in e.body)
+    assert photo.has_image is True
+    assert photo.caption is None
+
+    followup = next(e for e in entries if e.body.strip() == "667")
+    assert followup.has_image is False
+    assert followup.author == photo.author
+
+
 def test_to_message_carries_fields_through():
     entries = parse_export(FIXTURES / "sample_dash.txt")
     msg = to_message(entries[0], jid="arthur@s.whatsapp.net", message_id="abc")

@@ -40,13 +40,40 @@ def test_accepts_first_correct_beer(engine):
     assert db.next_expected_number() == 2
 
 
-def test_rejects_wrong_number_and_kicks(engine):
+def test_wrong_number_awaits_a_correction_then_gets_kicked_if_none_comes(engine):
     eng, db, gw, clock = engine
 
     result = eng.handle(msg("a@s.whatsapp.net", 5, message_id="m1"))
+    assert result == Action.AWAITING_CAPTION
+    assert gw.kicked == []
 
-    assert result == Action.SANCTIONED
+    clock.advance(timedelta(minutes=10))
+    swept = eng.sweep_pending_captions(clock.now())
+
+    assert swept == ["a@s.whatsapp.net"]
     assert gw.kicked == ["a@s.whatsapp.net"]
+
+
+def test_wrong_number_photo_corrected_right_after_is_accepted(engine):
+    # Reproduit un cas réel : légende tapée de travers ("21 »" au lieu de
+    # "210"), corrigée par un message texte ("210*") quelques secondes après.
+    eng, db, gw, clock = engine
+
+    eng.handle(msg("a@s.whatsapp.net", 1, message_id="m1"))  # compteur -> 2
+    clock.advance(timedelta(seconds=5))
+    result = eng.handle(msg("a@s.whatsapp.net", 999, message_id="m2"))  # faux numéro
+    assert result == Action.AWAITING_CAPTION
+
+    clock.advance(timedelta(seconds=5))
+    correction = IncomingMessage(
+        message_id="m3", jid="a@s.whatsapp.net", push_name="X",
+        has_image=False, caption="2", timestamp=clock.now(),
+    )
+    result = eng.handle(correction)
+
+    assert result == Action.ACCEPTED
+    assert gw.kicked == []
+    assert db.next_expected_number() == 3
 
 
 def test_dry_run_sanctions_without_touching_the_group():
@@ -56,8 +83,11 @@ def test_dry_run_sanctions_without_touching_the_group():
     eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=True, clock=clock)
 
     result = eng.handle(msg("a@s.whatsapp.net", 5))
+    assert result == Action.AWAITING_CAPTION
 
-    assert result == Action.SANCTIONED
+    clock.advance(timedelta(minutes=10))
+    eng.sweep_pending_captions(clock.now())
+
     assert gw.kicked == []
     assert gw.dms == []
 
@@ -84,14 +114,17 @@ def test_collision_within_grace_period_is_ignored_not_sanctioned(engine):
     assert gw.kicked == []
 
 
-def test_collision_after_grace_period_is_sanctioned(engine):
+def test_collision_after_grace_period_awaits_correction_then_gets_kicked(engine):
     eng, db, gw, clock = engine
 
     eng.handle(msg("a@s.whatsapp.net", 1, message_id="m1"))
     clock.advance(timedelta(seconds=200))
     result = eng.handle(msg("b@s.whatsapp.net", 1, message_id="m2"))
+    assert result == Action.AWAITING_CAPTION
 
-    assert result == Action.SANCTIONED
+    clock.advance(timedelta(minutes=10))
+    eng.sweep_pending_captions(clock.now())
+
     assert gw.kicked == ["b@s.whatsapp.net"]
 
 

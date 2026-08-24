@@ -7,6 +7,12 @@ Politique de réconciliation (§6.4) :
   (ordre chronologique de l'export), on ignore les suivants.
 - Trous dans la séquence : on les laisse, on ne renumérote jamais.
 
+Une photo dont la légende ne correspond pas au compteur attendu (légende
+oubliée, tapée de travers, corrigée après coup...) est réconciliée avec le
+message texte qui suit immédiatement, du même auteur, dans les
+FOLLOWUP_WINDOW minutes — même logique que le rattrapage en direct
+(Engine._try_complete_pending).
+
 Le mapping nom_export -> jid vient d'un CSV généré par link_members.py.
 Un auteur non mappé reçoit un jid provisoire "<nom>@unmapped.local", listé
 en fin d'exécution — à corriger avant de rebrancher le bot en live.
@@ -25,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.db import Beer, Database, Member  # noqa: E402
-from src.importer import parse_export  # noqa: E402
+from src.importer import FOLLOWUP_WINDOW, parse_export  # noqa: E402
 from src.validator import parse_numbers  # noqa: E402
 
 
@@ -45,18 +51,42 @@ def _slug(name: str) -> str:
 
 
 def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
-    entries = [e for e in parse_export(export_path) if e.has_image and e.caption]
+    entries = [e for e in parse_export(export_path) if not e.is_system]
     mapping = load_mapping(mapping_csv)
     db = Database(db_path)
 
-    imported = duplicates = skipped = 0
+    imported = duplicates = skipped = corrected = 0
     seen_authors: set[str] = set()
+    n = len(entries)
+    i = 0
 
-    for entry in entries:
+    while i < n:
+        entry = entries[i]
+        i += 1
+        if not entry.has_image:
+            continue
+
         seen_authors.add(entry.author)
-        # Une légende peut lister plusieurs numéros ("658 659 660") quand
-        # quelqu'un rattrape plusieurs bières d'un coup dans une photo.
-        numbers = parse_numbers(entry.caption)
+        expected = db.next_expected_number()
+        numbers = parse_numbers(entry.caption) if entry.caption else None
+
+        # Légende absente, illisible ou qui ne correspond pas au compteur :
+        # on regarde si le message suivant (même auteur, peu après) corrige.
+        if (numbers is None or numbers[0] != expected) and i < n:
+            followup = entries[i]
+            if (
+                followup.author == entry.author
+                and not followup.has_image
+                and followup.body.strip()
+                and followup.ts - entry.ts <= FOLLOWUP_WINDOW
+            ):
+                followup_numbers = parse_numbers(followup.body.strip())
+                if followup_numbers is not None:
+                    if numbers is not None:
+                        corrected += 1
+                    numbers = followup_numbers
+                    i += 1  # le message de correction est consommé
+
         if numbers is None:
             skipped += 1
             continue
@@ -78,7 +108,8 @@ def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
 
     print(
         f"{imported} bières importées, {duplicates} doublons ignorés "
-        f"(premier posté conservé), {skipped} légendes non numériques ignorées"
+        f"(premier posté conservé), {skipped} légendes non numériques ignorées, "
+        f"{corrected} corrigées par le message suivant"
     )
     print(f"compteur de référence après import : {db.next_expected_number() - 1}")
 

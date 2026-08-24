@@ -1,9 +1,10 @@
 """Orchestration : reçoit un message, décide, agit.
 
 C'est le seul module qui connaît la règle métier complète — validation,
-fenêtre de grâce pour les collisions, photo sans légende suivie du numéro
-juste après, exceptions (système/admin/bot), idempotence, et le
-déclenchement de la modération / des paliers.
+fenêtre de grâce pour les collisions, photo dont le numéro ne correspond
+pas (légende absente ou fausse) corrigée par le message suivant,
+exceptions (système/admin/bot), idempotence, et le déclenchement de la
+modération / des paliers.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ class _PendingPhoto:
     message_id: str | None
     posted_at: datetime
     raw_caption: str | None
+    reason: str
 
 
 @dataclass
@@ -89,9 +91,10 @@ class Engine:
         now = self.clock.now()
         is_admin = msg.jid in self.admin_jids
 
-        # Photo envoyée sans légende, puis le numéro arrive juste après dans
-        # un message à part (oubli) : on tente de raccrocher ce texte à la
-        # photo en attente avant de suivre le flux normal.
+        # Photo dont le numéro ne correspond pas (légende absente, tapée de
+        # travers, corrigée après coup...) : si le message suivant est un
+        # texte du même auteur, on tente de raccrocher avant de suivre le
+        # flux normal.
         if not msg.has_image and not is_admin and msg.jid in self._pending:
             completed = self._try_complete_pending(msg, now)
             if completed is not None:
@@ -128,11 +131,11 @@ class Engine:
             # infraction, juste un message ignoré par le compteur.
             return Action.ADMIN_EXEMPT
 
-        if msg.has_image and verdict.reason == "NO_CAPTION" and msg.jid not in self._pending:
-            # Oubli de légende : on laisse une chance d'envoyer le numéro
-            # dans un message séparé avant de sanctionner.
+        if msg.has_image and msg.jid not in self._pending:
+            # Légende absente ou incorrecte : on laisse une chance d'envoyer
+            # le bon numéro dans un message séparé avant de sanctionner.
             self._pending[msg.jid] = _PendingPhoto(
-                message_id=msg.message_id, posted_at=now, raw_caption=msg.caption
+                message_id=msg.message_id, posted_at=now, raw_caption=msg.caption, reason=verdict.reason
             )
             return Action.AWAITING_CAPTION
 
@@ -147,8 +150,8 @@ class Engine:
 
     def sweep_pending_captions(self, now: datetime) -> list[str]:
         """À appeler périodiquement (job planifié) : sanctionne les photos
-        sans légende dont la fenêtre de rattrapage a expiré sans qu'un
-        numéro ne suive. Retourne les jid sanctionnés."""
+        dont la fenêtre de rattrapage a expiré sans correction valide.
+        Retourne les jid sanctionnés."""
 
         expired_jids = [
             jid for jid, pending in self._pending.items()
@@ -160,7 +163,7 @@ class Engine:
             if jid in self.admin_jids:
                 continue
             moderation.moderate(
-                self.db, self.gateway, self.group, jid, "NO_CAPTION", pending.raw_caption, now, self.dry_run,
+                self.db, self.gateway, self.group, jid, pending.reason, pending.raw_caption, now, self.dry_run,
                 tiers=self.tiers, prescription=self.prescription,
             )
 
