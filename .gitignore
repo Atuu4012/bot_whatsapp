@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific: real WhatsApp export and planning notes (private data)
+/whatsapp_chat/
+/plan-bot-biere.md
+
+# Runtime data (DB, session, logs) — never commit real member/beer data
+/data/
+/logs/
+*.db
+*.db-journal
