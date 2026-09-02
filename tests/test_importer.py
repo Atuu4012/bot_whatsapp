@@ -90,6 +90,30 @@ def test_photo_without_caption_followed_by_bare_number():
     assert followup.author == photo.author
 
 
+def test_media_omitted_line_with_a_leading_caption_is_a_captioned_photo(tmp_path):
+    # Export « sans médias » : la pièce jointe et sa légende sont sur la même
+    # ligne (« 781 image omitted »). Le numéro doit être récupéré.
+    export = tmp_path / "export.txt"
+    export.write_text(
+        "\u200E[30/07/2026, 21:12:16] Karl: 6 \u200Eimage omitted\n"
+        "\u200E[30/07/2026, 21:13:07] Alix: 17 rouge et vert \u200Eimage omitted\n"
+        "\u200E[30/07/2026, 21:14:00] Alix: \u200Eimage omitted\n"
+        "\u200E[30/07/2026, 21:15:00] Karl: 42 \u200Evideo omitted\n",
+        encoding="utf-8",
+    )
+    entries = parse_export(str(export))
+
+    assert entries[0].has_image is True
+    assert entries[0].caption == "6"
+    assert entries[1].has_image is True
+    assert entries[1].caption == "17 rouge et vert"
+    assert entries[2].has_image is True  # légende absente
+    assert entries[2].caption is None
+    assert entries[3].has_image is False  # vidéo : pas une photo
+    assert entries[3].has_attachment is True
+    assert entries[3].caption is None
+
+
 def test_to_message_carries_fields_through():
     entries = parse_export(FIXTURES / "sample_dash.txt")
     msg = to_message(entries[0], jid="arthur@s.whatsapp.net", message_id="abc")

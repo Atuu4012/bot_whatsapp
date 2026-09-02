@@ -44,9 +44,22 @@ _ATTACHED_RE = re.compile(r"\s*<attached:\s*([^>]*)>\s*$", re.IGNORECASE)
 # TYPE (PHOTO/VIDEO/GIF/AUDIO/DOCUMENT...) est plus fiable que l'extension —
 # un GIF s'exporte par exemple en "...-GIF-....mp4", pas en .gif.
 _IS_PHOTO_ATTACHMENT_RE = re.compile(r"-PHOTO-|\.(jpe?g|png|webp)$", re.IGNORECASE)
+# Export « sans médias » : WhatsApp remplace la pièce jointe par un texte
+# « image omitted » / « video omitted » / « <Médias omis> », souvent précédé
+# de la légende sur la même ligne (« 781 image omitted »). Le mot avant
+# « omitted » donne le type ; « <Médias omis> » (FR) ne le donne pas — on
+# suppose alors une photo, cas ultra-dominant. Seule une image porte une
+# légende-numéro exploitable ; une vidéo/GIF compte via un texte séparé (§6.4).
 _MEDIA_OMITTED_RE = re.compile(
-    r"^(<m[ée]dias?\s+omis>|image omitted|‎?image absente)$", re.IGNORECASE
+    r"(?:^|\s)"
+    r"(?:<m[ée]dias?\s+omis>"
+    r"|(?P<kind>image|photo|vid[ée]o|video|gif|audio|sticker|document)"
+    r"\s+(?:omitted|omise?)"
+    r"|image\s+absente)"
+    r"\s*$",
+    re.IGNORECASE,
 )
+_MEDIA_OMITTED_PHOTO_KINDS = {"", "image", "photo"}
 
 # Fenêtre pendant laquelle un message texte juste après une photo sans
 # légende est considéré comme le numéro oublié plutôt qu'un message à part.
@@ -134,15 +147,17 @@ def _finalize(raw_entry: dict) -> ImportedEntry:
     is_system = _is_system(author, body)
 
     attached_match = _ATTACHED_RE.search(body)
+    media_match = None if attached_match else _MEDIA_OMITTED_RE.search(body)
     if attached_match:
         filename = attached_match.group(1)
         has_attachment = True
         has_image = bool(_IS_PHOTO_ATTACHMENT_RE.search(filename))
         caption = (body[: attached_match.start()].strip() or None) if has_image else None
-    elif _MEDIA_OMITTED_RE.match(body.strip()):
+    elif media_match:
         has_attachment = True
-        has_image = True
-        caption = None
+        kind = (media_match.groupdict().get("kind") or "").lower()
+        has_image = kind in _MEDIA_OMITTED_PHOTO_KINDS
+        caption = (body[: media_match.start()].strip() or None) if has_image else None
     else:
         has_attachment = False
         has_image = False
