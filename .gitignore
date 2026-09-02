@@ -220,6 +220,8 @@ __marimo__/
 # Project-specific: real WhatsApp export and planning notes (private data)
 /whatsapp_chat/
 /plan-bot-biere.md
+# Mapping nom -> JID : contient les numéros de téléphone des membres
+/membres.csv
 
 # Runtime data (DB, session, logs) — never commit real member/beer data
 /data/
