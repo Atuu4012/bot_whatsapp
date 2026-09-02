@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from src.db import Database
+from src.db import PLACEHOLDER_SOURCE, Database
 
 
 def leaderboard(db: Database) -> list[dict]:
@@ -15,7 +15,8 @@ def posts_by_weekday(db: Database) -> dict[int, int]:
     """0 = dimanche ... 6 = samedi (convention strftime %w de SQLite)."""
     rows = db.conn.execute(
         "SELECT strftime('%w', posted_at) AS jour, COUNT(*) AS n "
-        "FROM beers GROUP BY jour"
+        "FROM beers WHERE source <> ? GROUP BY jour",
+        (PLACEHOLDER_SOURCE,),
     ).fetchall()
     return {int(row["jour"]): row["n"] for row in rows}
 
@@ -23,7 +24,8 @@ def posts_by_weekday(db: Database) -> dict[int, int]:
 def posts_by_hour(db: Database) -> dict[int, int]:
     rows = db.conn.execute(
         "SELECT strftime('%H', posted_at) AS heure, COUNT(*) AS n "
-        "FROM beers GROUP BY heure ORDER BY n DESC"
+        "FROM beers WHERE source <> ? GROUP BY heure ORDER BY n DESC",
+        (PLACEHOLDER_SOURCE,),
     ).fetchall()
     return {int(row["heure"]): row["n"] for row in rows}
 
@@ -46,7 +48,8 @@ def longest_streak(db: Database, jid: str) -> int:
 
 def weekly_recap(db: Database, since: datetime) -> str:
     row = db.conn.execute(
-        "SELECT COUNT(*) AS n FROM beers WHERE posted_at >= ?", (since.isoformat(),)
+        "SELECT COUNT(*) AS n FROM beers WHERE posted_at >= ? AND source <> ?",
+        (since.isoformat(), PLACEHOLDER_SOURCE),
     ).fetchone()
     count = row["n"]
 

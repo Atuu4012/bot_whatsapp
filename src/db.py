@@ -53,6 +53,12 @@ CREATE INDEX IF NOT EXISTS idx_beers_jid ON beers(jid);
 CREATE INDEX IF NOT EXISTS idx_beers_posted ON beers(posted_at);
 """
 
+# Ligne « bouche-trou » : un numéro jamais retrouvé dans l'historique mais que
+# la suite de la séquence prouve avoir existé (§6.4). Elle est rattachée à un
+# membre fictif « - » et exclue des classements et des rythmes.
+PLACEHOLDER_JID = "-@placeholder.local"
+PLACEHOLDER_SOURCE = "placeholder"
+
 
 def _dt_to_str(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
@@ -259,7 +265,9 @@ class Database:
                    COALESCE(m.push_name, m.display_name, m.jid) AS name,
                    COUNT(*) AS total
             FROM beers b JOIN members m ON m.jid = b.jid
+            WHERE b.source <> ?
             GROUP BY b.jid
             ORDER BY total DESC
-            """
+            """,
+            (PLACEHOLDER_SOURCE,),
         ).fetchall()

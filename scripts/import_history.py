@@ -5,7 +5,10 @@ Politique de réconciliation (§6.4) :
 - Le nombre de référence, c'est MAX(number) atteint, pas le nombre de lignes.
 - Doublons (même numéro posté plusieurs fois) : on garde le premier posté
   (ordre chronologique de l'export), on ignore les suivants.
-- Trous dans la séquence : on les laisse, on ne renumérote jamais.
+- Trous dans la séquence : on ne renumérote jamais, mais chaque numéro
+  manquant sous le MAX atteint reçoit une ligne « bouche-trou » (auteur
+  fictif « - », source "placeholder") pour que la base compte autant de
+  lignes que de bières. Ces lignes sont exclues des classements et rythmes.
 
 La vraie vie est plus désordonnée qu'« une photo, une légende » : sur les
 vraies données, le numéro arrive parfois avant la pièce jointe, parfois
@@ -36,7 +39,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.db import Beer, Database, Member  # noqa: E402
+# Les noms d'auteurs WhatsApp contiennent des espaces fines insécables
+# (U+202F) et des emojis : la console Windows (cp1252) plante à l'affichage.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
+from src.db import (  # noqa: E402
+    PLACEHOLDER_JID,
+    PLACEHOLDER_SOURCE,
+    Beer,
+    Database,
+    Member,
+)
 from src.importer import FOLLOWUP_WINDOW, ImportedEntry, parse_export  # noqa: E402
 from src.validator import parse_numbers  # noqa: E402
 
@@ -59,6 +74,29 @@ def _slug(name: str) -> str:
 def _prune(queue: list, now: datetime, ts_of) -> None:
     while queue and now - ts_of(queue[0]) > FOLLOWUP_WINDOW:
         queue.pop(0)
+
+
+def _sane_numbers(numbers: tuple[int, ...]) -> tuple[int, ...]:
+    """Répare une légende multi-numéros supposée consécutive.
+
+    Quand une légende liste N numéros et que le premier et le dernier
+    encadrent exactement une suite de N (« 782-7833-784 » : 782..784, donc
+    3 numéros), on la réécrit comme la suite consécutive 782,783,784 — ça
+    corrige au passage les fautes de frappe du milieu (« 7833 » pour 783,
+    « 667 » pour 676 dans « 675-667-677 »).
+
+    Si le premier et le dernier n'encadrent pas une suite propre (ex.
+    « 10, 500 »), on ne garde que le premier numéro : les autres, s'ils
+    sont réels, ressortiront comme des trous comblés par « - » plutôt que
+    d'injecter un numéro aberrant qui ferait exploser le MAX.
+    """
+
+    if len(numbers) <= 1:
+        return numbers
+    span = tuple(range(numbers[0], numbers[0] + len(numbers)))
+    if numbers[-1] == span[-1]:
+        return span
+    return (numbers[0],)
 
 
 def reconcile(
@@ -95,6 +133,8 @@ def reconcile(
 
         if entry.has_attachment:
             numbers = parse_numbers(entry.caption) if entry.caption else None
+            if numbers is not None:
+                numbers = _sane_numbers(numbers)
 
             if numbers is not None and numbers[0] not in used:
                 resolved.append((author, entry.ts, numbers))
@@ -118,6 +158,7 @@ def reconcile(
         numbers = parse_numbers(text) if text else None
         if numbers is None:
             continue  # bavardage sans numéro : ignoré, ne casse pas une attente en cours
+        numbers = _sane_numbers(numbers)
 
         if pending_media[author]:
             # Une liste de numéros peut couvrir plusieurs photos en attente
@@ -139,6 +180,69 @@ def reconcile(
         len(q) for q in pending_numbers.values()
     )
     return resolved, corrected, unresolved
+
+
+def fill_gaps(db: Database) -> int:
+    """Insère une ligne « - » pour chaque numéro absent sous le MAX atteint.
+
+    On ne renumérote rien : le trou garde son numéro, mais la base doit
+    compter autant de lignes que de bières (MAX(number)). Chaque bouche-trou
+    est rattaché au membre fictif ``PLACEHOLDER_JID`` et hérite de
+    l'horodatage de la première bière réelle postée après lui — celle qui
+    prouve que la séquence a bel et bien continué. Idempotent : un second
+    passage ne voit plus de trou à combler.
+    """
+
+    rows = db.conn.execute(
+        "SELECT number, posted_at FROM beers ORDER BY number"
+    ).fetchall()
+    if not rows:
+        return 0
+
+    present = {r["number"] for r in rows}
+    max_number = rows[-1]["number"]
+    missing = [n for n in range(1, max_number) if n not in present]
+    if not missing:
+        return 0
+
+    if db.get_member(PLACEHOLDER_JID) is None:
+        db.save_member(Member(jid=PLACEHOLDER_JID, display_name="-"))
+
+    ordered = [(r["number"], r["posted_at"]) for r in rows]
+    for n in missing:
+        posted_at = next(ts for number, ts in ordered if number > n)
+        db.conn.execute(
+            "INSERT INTO beers (number, jid, message_id, posted_at, source) "
+            "VALUES (?, ?, NULL, ?, ?)",
+            (n, PLACEHOLDER_JID, posted_at, PLACEHOLDER_SOURCE),
+        )
+    db.conn.commit()
+    return len(missing)
+
+
+def reindex_by_number(db: Database) -> None:
+    """Réaligne l'``id`` sur l'ordre des numéros.
+
+    Les bières sont insérées dans l'ordre chronologique de l'export et les
+    bouche-trous à la toute fin : un affichage trié par ``id`` reléguait
+    donc les lignes « - » en bas de table au lieu de les montrer à leur
+    place. Après le comblage, la séquence est contiguë (1..MAX) ; on
+    réinsère tout trié par ``number`` pour que ``id == number``.
+    """
+
+    rows = db.conn.execute(
+        "SELECT number, jid, message_id, posted_at, source FROM beers ORDER BY number"
+    ).fetchall()
+    if not rows:
+        return
+    db.conn.execute("DELETE FROM beers")
+    db.conn.execute("DELETE FROM sqlite_sequence WHERE name = 'beers'")
+    db.conn.executemany(
+        "INSERT INTO beers (number, jid, message_id, posted_at, source) "
+        "VALUES (:number, :jid, :message_id, :posted_at, :source)",
+        [dict(r) for r in rows],
+    )
+    db.conn.commit()
 
 
 def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
@@ -169,11 +273,15 @@ def import_history(export_path: str, mapping_csv: str, db_path: str) -> None:
             db.insert_beer(Beer(number=number, jid=jid, posted_at=ts, source="import"))
             imported += 1
 
+    gaps = fill_gaps(db)
+    reindex_by_number(db)
+
     print(
         f"{imported} bières importées, {duplicates} doublons ignorés "
         f"(premier posté conservé), {corrected} résolues par réconciliation "
         f"(numéro avant/après la photo, ou liste sur plusieurs photos), "
-        f"{unresolved} pièces jointes/numéros jamais réconciliés"
+        f"{unresolved} pièces jointes/numéros jamais réconciliés, "
+        f"{gaps} trous comblés par une ligne « - »"
     )
     print(f"compteur de référence après import : {db.next_expected_number() - 1}")
 

@@ -4,9 +4,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from import_history import import_history, reconcile  # noqa: E402
+from import_history import _sane_numbers, import_history, reconcile  # noqa: E402
 
-from src.db import Database  # noqa: E402
+from src.db import PLACEHOLDER_JID, PLACEHOLDER_SOURCE, Database  # noqa: E402
 from src.importer import parse_export  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -156,6 +156,138 @@ def test_reconcile_accepts_a_gap_in_the_sequence_without_reconciliation(tmp_path
     assert resolved_numbers == {1, 5}
     assert corrected == 0
     assert unresolved == 0
+
+
+def test_sane_numbers_repairs_a_typo_inside_a_consecutive_run():
+    # premier et dernier encadrent une suite de N : on réécrit la suite,
+    # ce qui corrige la coquille du milieu.
+    assert _sane_numbers((782, 7833, 784)) == (782, 783, 784)
+    assert _sane_numbers((675, 667, 677)) == (675, 676, 677)
+    # déjà consécutif : inchangé
+    assert _sane_numbers((181, 182, 183)) == (181, 182, 183)
+    # pas une suite propre : on ne garde que le premier
+    assert _sane_numbers((10, 500)) == (10,)
+    assert _sane_numbers((5,)) == (5,)
+
+
+def test_non_consecutive_caption_does_not_inflate_the_max(tmp_path):
+    export = tmp_path / "export.txt"
+    export.write_text(
+        "[1/1/26, 10:00:00] Zav: 1 <attached: a.jpg>\n"
+        "[1/1/26, 10:01:00] Zav: 2-9002-4 <attached: b.jpg>\n",  # coquille pour 2-3-4
+        encoding="utf-8",
+    )
+    mapping = tmp_path / "membres.csv"
+    _write_mapping(mapping, ["Zav"])
+    db_path = tmp_path / "beerbot.db"
+    import_history(str(export), str(mapping), str(db_path))
+
+    db = Database(str(db_path))
+    assert db.next_expected_number() == 5  # MAX == 4, pas 9002
+    reals = {r["number"] for r in db.conn.execute(
+        f"SELECT number FROM beers WHERE source <> '{PLACEHOLDER_SOURCE}'"
+    )}
+    assert reals == {1, 2, 3, 4}
+
+
+def test_batch_multiplier_caption_attributes_the_whole_run(tmp_path):
+    # Cas réel ("829 (x4)" de Karl) : une photo, quatre bières rattrapées,
+    # la dernière numérotée 829 → 826..829 pour Karl, aucun trou « - ».
+    export = tmp_path / "export.txt"
+    export.write_text(
+        "[1/1/26, 10:00:00] Zav: 825 <attached: a.jpg>\n"
+        "[1/1/26, 10:01:00] Karl: 829 (x4) <attached: b.jpg>\n",
+        encoding="utf-8",
+    )
+    mapping = tmp_path / "membres.csv"
+    _write_mapping(mapping, ["Zav", "Karl"])
+    db_path = tmp_path / "beerbot.db"
+    import_history(str(export), str(mapping), str(db_path))
+
+    db = Database(str(db_path))
+    rows = db.conn.execute(
+        "SELECT number, jid, source FROM beers WHERE number >= 825 ORDER BY number"
+    ).fetchall()
+    assert [r["number"] for r in rows] == [825, 826, 827, 828, 829]
+    assert all(r["source"] != PLACEHOLDER_SOURCE for r in rows)  # aucun trou « - »
+    karl = {r["number"] for r in rows if r["jid"] == "karl@s.whatsapp.net"}
+    assert karl == {826, 827, 828, 829}
+
+
+def test_gap_in_the_sequence_is_filled_with_a_placeholder_row(tmp_path):
+    # 2, 3, 4 n'ont jamais été retrouvés mais 5 prouve que la séquence a
+    # continué : la base doit compter 5 lignes, dont 3 « - ».
+    export = tmp_path / "export.txt"
+    export.write_text(
+        "[1/1/26, 10:00:00] Karl: 1 <attached: a.jpg>\n"
+        "[1/1/26, 10:05:00] Karl: 5 <attached: b.jpg>\n",
+        encoding="utf-8",
+    )
+    mapping = tmp_path / "membres.csv"
+    _write_mapping(mapping, ["Karl"])
+    db_path = tmp_path / "beerbot.db"
+
+    import_history(str(export), str(mapping), str(db_path))
+
+    db = Database(str(db_path))
+    rows = db.conn.execute(
+        "SELECT number, jid, source FROM beers ORDER BY number"
+    ).fetchall()
+
+    assert [r["number"] for r in rows] == [1, 2, 3, 4, 5]
+    placeholders = [r for r in rows if r["source"] == PLACEHOLDER_SOURCE]
+    assert [r["number"] for r in placeholders] == [2, 3, 4]
+    assert all(r["jid"] == PLACEHOLDER_JID for r in placeholders)
+    # id réaligné sur number : une vue triée par id montre les « - » en place
+    id_rows = db.conn.execute("SELECT id, number FROM beers ORDER BY id").fetchall()
+    assert [r["number"] for r in id_rows] == [1, 2, 3, 4, 5]
+    assert all(r["id"] == r["number"] for r in id_rows)
+    # le compteur de référence reste MAX(number), pas le nombre de lignes
+    assert db.next_expected_number() == 6
+    # horodatage hérité de la première bière réelle qui suit (le "5")
+    ts = {r["number"]: r["posted_at"] for r in db.conn.execute(
+        "SELECT number, posted_at FROM beers"
+    ).fetchall()}
+    assert ts[2] == ts[5] == ts[3] == ts[4]
+
+
+def test_filled_gaps_are_excluded_from_the_leaderboard(tmp_path):
+    from src.stats import leaderboard
+
+    export = tmp_path / "export.txt"
+    export.write_text(
+        "[1/1/26, 10:00:00] Karl: 1 <attached: a.jpg>\n"
+        "[1/1/26, 10:05:00] Karl: 4 <attached: b.jpg>\n",
+        encoding="utf-8",
+    )
+    mapping = tmp_path / "membres.csv"
+    _write_mapping(mapping, ["Karl"])
+    db_path = tmp_path / "beerbot.db"
+
+    import_history(str(export), str(mapping), str(db_path))
+
+    db = Database(str(db_path))
+    names = {row["name"] for row in leaderboard(db)}
+    assert "-" not in names
+
+
+def test_import_is_idempotent_on_gap_filling(tmp_path):
+    export = tmp_path / "export.txt"
+    export.write_text(
+        "[1/1/26, 10:00:00] Karl: 1 <attached: a.jpg>\n"
+        "[1/1/26, 10:05:00] Karl: 3 <attached: b.jpg>\n",
+        encoding="utf-8",
+    )
+    mapping = tmp_path / "membres.csv"
+    _write_mapping(mapping, ["Karl"])
+    db_path = tmp_path / "beerbot.db"
+
+    import_history(str(export), str(mapping), str(db_path))
+    import_history(str(export), str(mapping), str(db_path))
+
+    db = Database(str(db_path))
+    rows = db.conn.execute("SELECT number FROM beers ORDER BY number").fetchall()
+    assert [r["number"] for r in rows] == [1, 2, 3]
 
 
 def test_reconcile_accepts_a_multi_number_caption_even_with_a_gap_before_it(tmp_path):
