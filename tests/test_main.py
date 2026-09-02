@@ -1,8 +1,10 @@
-from datetime import timedelta
+import logging
+from datetime import datetime, timedelta
 
 from src.config import Config
 from src.db import Database
-from src.main import build_engine, start_scheduler
+from src.gateway import IncomingMessage
+from src.main import build_engine, build_message_handler, start_scheduler
 from tests.fakes import FakeGateway
 
 
@@ -93,3 +95,22 @@ def test_weekly_recap_poste_hors_dry_run():
         scheduler.shutdown(wait=False)
 
     assert len(gw.group_msgs) == 1
+
+
+def test_le_handler_traite_et_journalise_la_decision(caplog):
+    """Un bot en observation qui ne journalise rien ne s'observe pas."""
+    db = Database(":memory:")
+    gw = FakeGateway()
+    engine = build_engine(_config(dry_run=True), db, gw)
+
+    with caplog.at_level(logging.INFO, logger="beerbot"):
+        build_message_handler(engine)(
+            IncomingMessage(
+                message_id="m1", jid="a@s.whatsapp.net", push_name="Alix",
+                has_image=True, caption="1", timestamp=datetime(2026, 1, 1),
+            )
+        )
+
+    assert db.next_expected_number() == 2
+    assert "Alix" in caplog.text
+    assert "ACCEPTED" in caplog.text

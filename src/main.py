@@ -12,12 +12,14 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+from typing import Callable
+
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.config import Config, load_config
 from src.db import Database
 from src.engine import Engine
-from src.gateway import NeonizeGateway, WhatsAppGateway
+from src.gateway import IncomingMessage, NeonizeGateway, WhatsAppGateway
 from src.moderation import process_returns
 from src.stats import weekly_recap
 
@@ -41,6 +43,29 @@ def build_engine(config: Config, db: Database, gateway: WhatsAppGateway) -> Engi
         tiers={1: timedelta(hours=config.tier1_hours), 2: timedelta(days=config.tier2_days)},
         prescription=timedelta(days=config.prescription_days),
     )
+
+
+def build_message_handler(engine: Engine) -> Callable[[IncomingMessage], None]:
+    """Traite un message et journalise la décision prise.
+
+    C'est ce journal qu'on relit chaque soir pendant les deux semaines
+    d'observation (§14) : sans lui, un bot en DRY_RUN travaille en silence
+    et il n'y a rien à relire. Il évite aussi d'avoir à faire tourner
+    `scripts/probe_events.py` en parallèle — ce qui est impossible, les deux
+    partageraient la même session WhatsApp.
+    """
+
+    def handle(msg: IncomingMessage) -> None:
+        action = engine.handle(msg)
+        log.info(
+            "%s de %s | légende=%r -> %s",
+            "photo" if msg.has_image else "texte",
+            msg.push_name or msg.jid,
+            msg.caption,
+            action.name,
+        )
+
+    return handle
 
 
 def start_scheduler(
@@ -107,7 +132,7 @@ def main() -> None:
     engine = build_engine(config, db, gateway)
     start_scheduler(db, gateway, config, engine)
 
-    gateway.on_message(engine.handle)
+    gateway.on_message(build_message_handler(engine))
 
     log.info("BeerBot prêt (groupe=%s, dry_run=%s)", config.group_jid, config.dry_run)
     gateway.connect()
