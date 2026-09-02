@@ -217,6 +217,101 @@ class Database:
         beer.id = cur.lastrowid
         return beer
 
+    def beers_for_message(self, message_id: str | None) -> list[Beer]:
+        """Toutes les bières nées d'un même message (une légende peut en
+        lister plusieurs), triées par numéro."""
+        if message_id is None:
+            return []
+        return [
+            Beer.from_row(row)
+            for row in self.conn.execute(
+                "SELECT * FROM beers WHERE message_id = ? ORDER BY number", (message_id,)
+            )
+        ]
+
+    def get_beer(self, number: int) -> Beer | None:
+        row = self.conn.execute("SELECT * FROM beers WHERE number = ?", (number,)).fetchone()
+        return Beer.from_row(row) if row else None
+
+    def delete_beers(self, numbers: list[int]) -> None:
+        self.conn.executemany("DELETE FROM beers WHERE number = ?", [(n,) for n in numbers])
+        self.conn.commit()
+
+    def restore_sequence(self, now: datetime) -> tuple[list[int], list[int]]:
+        """Rétablit l'invariant : la séquence va de 1 au MAX, sans trou.
+
+        Deux gestes, dans cet ordre :
+        1. on retire les bouche-trous qui traînent en haut de séquence — un
+           « - » ne doit jamais tenir le compteur à lui seul, sinon une
+           correction vers le bas laisserait le compteur bloqué en l'air ;
+        2. on comble par un « - » tout numéro manquant sous le MAX.
+
+        Retourne (numéros comblés, numéros libérés). Idempotent : un second
+        passage ne trouve plus rien à faire.
+        """
+        retires: list[int] = []
+        while True:
+            row = self.conn.execute(
+                "SELECT number, jid FROM beers ORDER BY number DESC LIMIT 1"
+            ).fetchone()
+            if row is None or row["jid"] != PLACEHOLDER_JID:
+                break
+            self.conn.execute("DELETE FROM beers WHERE number = ?", (row["number"],))
+            retires.append(row["number"])
+
+        rows = self.conn.execute("SELECT number FROM beers ORDER BY number").fetchall()
+        combles: list[int] = []
+        if rows:
+            presents = {r["number"] for r in rows}
+            manquants = [n for n in range(1, rows[-1]["number"]) if n not in presents]
+            if manquants:
+                self._ensure_placeholder_member()
+                self.conn.executemany(
+                    "INSERT INTO beers (number, jid, message_id, posted_at, source) "
+                    "VALUES (?, ?, NULL, ?, ?)",
+                    [(n, PLACEHOLDER_JID, _dt_to_str(now), PLACEHOLDER_SOURCE) for n in manquants],
+                )
+                combles = manquants
+
+        self.conn.commit()
+        return combles, retires
+
+    def _ensure_placeholder_member(self) -> None:
+        if self.get_member(PLACEHOLDER_JID) is None:
+            self.save_member(Member(jid=PLACEHOLDER_JID, display_name="-"))
+
+    def merge_member(self, ancien_jid: str, nouveau_jid: str, push_name: str | None = None) -> None:
+        """Bascule tout l'historique d'un JID vers un autre.
+
+        Sert à l'adoption automatique (§6.3) : le membre bouchon issu de
+        l'import disparaît au profit du JID réel. Les clés étrangères
+        interdisent de renommer la clé primaire en place, d'où l'ordre
+        insérer / déplacer / supprimer.
+        """
+        ancien = self.get_member(ancien_jid)
+        if ancien is None or ancien_jid == nouveau_jid:
+            return
+
+        cible = self.get_member(nouveau_jid)
+        if cible is None:
+            cible = Member(
+                jid=nouveau_jid,
+                display_name=ancien.display_name,
+                push_name=push_name or ancien.push_name,
+                joined_at=ancien.joined_at,
+            )
+        else:
+            # Le compteur de sanctions du membre vivant fait foi ; on ne
+            # récupère du bouchon que son nom d'export, utile aux stats.
+            cible.display_name = cible.display_name or ancien.display_name
+            cible.push_name = push_name or cible.push_name or ancien.push_name
+        self.save_member(cible)
+
+        self.conn.execute("UPDATE beers SET jid = ? WHERE jid = ?", (nouveau_jid, ancien_jid))
+        self.conn.execute("UPDATE infractions SET jid = ? WHERE jid = ?", (nouveau_jid, ancien_jid))
+        self.conn.execute("DELETE FROM members WHERE jid = ?", (ancien_jid,))
+        self.conn.commit()
+
     # --- infractions --------------------------------------------------
 
     def insert_infraction(
