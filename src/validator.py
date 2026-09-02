@@ -26,6 +26,18 @@ _NOISE_CHARS = (" ", " ", "#")
 
 _DIGITS_RE = re.compile(r"\d+")
 
+# Rattrapage en lot : « 829 (x4) » = 4 bières consécutives dont la dernière
+# porte le numéro 829, donc 826,827,828,829. Tolère « 829x4 », « 829 x 4 »,
+# « 829 [x4] ». Le lookahead évite de confondre avec une dimension ou un
+# volume (« 6x9 », « 2x50cl ») ; le nombre de bières est borné plus bas.
+_MULTIPLIER_RE = re.compile(
+    r"(?P<end>\d+)\s*[(\[]?\s*x\s*(?P<count>\d{1,2})(?![A-Za-z\d])\s*[)\]]?",
+    re.IGNORECASE,
+)
+# Une seule photo ne rattrape pas des dizaines de bières : au-delà, c'est
+# sûrement autre chose qu'un multiplicateur.
+_MULTIPLIER_MAX_COUNT = 12
+
 # "quelques mots" de texte/emoji tolérés autour du/des numéro(s). Calibré sur
 # les vraies légendes observées (1 à 6 mots, ex. "rouge et vert ça fait jaune").
 MAX_EXTRA_WORDS = 6
@@ -47,6 +59,19 @@ def parse_numbers(caption: str) -> tuple[int, ...] | None:
     cleaned = caption.strip()
     for ch in _NOISE_CHARS:
         cleaned = cleaned.replace(ch, "")
+
+    mult = _MULTIPLIER_RE.search(cleaned)
+    if mult:
+        end, count = int(mult["end"]), int(mult["count"])
+        remainder = cleaned[: mult.start()] + cleaned[mult.end() :]
+        looks_like_batch = (
+            2 <= count <= min(_MULTIPLIER_MAX_COUNT, end)
+            and len([w for w in remainder.split() if w.strip(",.-")]) <= MAX_EXTRA_WORDS
+        )
+        if looks_like_batch:
+            return tuple(range(end - count + 1, end + 1))
+        # multiplicateur douteux (« 6x9 », « 2x50cl »…) : on retombe sur
+        # l'extraction classique des chiffres ci-dessous.
 
     numbers = tuple(int(tok) for tok in _DIGITS_RE.findall(cleaned))
     if not numbers:

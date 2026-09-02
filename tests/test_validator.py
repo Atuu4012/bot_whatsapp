@@ -117,3 +117,24 @@ def test_too_much_text_around_number_is_rejected():
 def test_single_number_verdict_still_carries_numbers_tuple():
     verdict = validate(img_msg("651"), 651)
     assert verdict.numbers == (651,)
+
+
+@pytest.mark.parametrize("caption", ["829 (x4)", "829(x4)", "829 x4", "829 x 4", "829 [x4]"])
+def test_batch_multiplier_expands_to_consecutive_run_ending_at_the_number(caption):
+    # "829 (x4)" = les 4 dernières bières d'un coup : 826,827,828,829.
+    verdict = validate(img_msg(caption), 826)
+    assert verdict.ok is True
+    assert verdict.numbers == (826, 827, 828, 829)
+
+
+def test_batch_multiplier_rejected_when_run_does_not_start_at_expected():
+    verdict = validate(img_msg("829 (x4)"), 827)
+    assert verdict.ok is False
+    assert verdict.reason == "WRONG_NUMBER"
+
+
+@pytest.mark.parametrize("caption", ["6x9", "2x50cl", "50x20", "829 x40"])
+def test_dimension_or_volume_is_not_read_as_a_batch_multiplier(caption):
+    # « 6x9 », « 2x50cl »… ne doivent pas rattraper des dizaines de bières.
+    verdict = validate(img_msg(caption), 6)
+    assert verdict.ok is False
