@@ -90,6 +90,13 @@ class Engine:
             self.clock = Clock()
 
     def handle(self, msg: IncomingMessage) -> Action:
+        """Point d'entrée, appelé depuis le thread de callback de neonize
+        pendant que le planificateur balaie sur les siens : tout le
+        traitement d'un message est atomique vis-à-vis de la base."""
+        with self.db.lock:
+            return self._handle(msg)
+
+    def _handle(self, msg: IncomingMessage) -> Action:
         if msg.is_system:
             return Action.IGNORED_SYSTEM
 
@@ -166,6 +173,10 @@ class Engine:
         return Action.SANCTIONED
 
     def sweep_pending_captions(self, now: datetime) -> list[str]:
+        with self.db.lock:
+            return self._sweep_pending_captions(now)
+
+    def _sweep_pending_captions(self, now: datetime) -> list[str]:
         """À appeler périodiquement (job planifié) : sanctionne les photos
         dont la fenêtre de rattrapage a expiré sans correction valide.
         Retourne les jid sanctionnés."""
@@ -265,6 +276,10 @@ class Engine:
         return Action.ACCEPTED_WITH_GAP
 
     def sweep_pending_warnings(self, now: datetime) -> list[str]:
+        with self.db.lock:
+            return self._sweep_pending_warnings(now)
+
+    def _sweep_pending_warnings(self, now: datetime) -> list[str]:
         """Envoie les avertissements « numéro sauté » dont le délai est passé.
 
         Ceux dont la légende a été corrigée entre-temps ont déjà quitté la

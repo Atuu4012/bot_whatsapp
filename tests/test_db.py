@@ -61,3 +61,48 @@ def test_merge_member_deplace_tout_et_supprime_lancien():
     assert db.get_beer(1).jid == "b@s.whatsapp.net"
     assert len(db.infractions_for("b@s.whatsapp.net")) == 1
     assert db.get_member("b@s.whatsapp.net").push_name == "B"
+
+
+def test_la_base_est_utilisable_depuis_un_autre_thread():
+    """neonize livre les messages sur son propre thread, le planificateur
+    balaie sur les siens : sqlite3 refusait la connexion ailleurs que là où
+    elle avait été créée, et tout message reçu partait à l'erreur."""
+    import threading
+
+    db = _db([1])
+    vu = {}
+
+    fil = threading.Thread(target=lambda: vu.update(membre=db.get_member("a@s.whatsapp.net")))
+    fil.start()
+    fil.join()
+
+    assert vu["membre"] is not None
+
+
+def test_deux_threads_ninterferent_pas_sur_une_meme_operation():
+    """Le verrou porte sur l'opération métier, pas sur la requête : deux
+    insertions concurrentes ne doivent pas se marcher dessus."""
+    import threading
+
+    db = _db([])
+    db.save_member(Member(jid="b@s.whatsapp.net"))
+    erreurs = []
+
+    def insere(debut: int) -> None:
+        try:
+            for n in range(debut, debut + 50):
+                with db.lock:
+                    db.insert_beer(
+                        Beer(number=n, jid="b@s.whatsapp.net", posted_at=NOW, source="live")
+                    )
+        except Exception as exc:  # noqa: BLE001 — c'est ce qu'on veut voir échouer
+            erreurs.append(exc)
+
+    fils = [threading.Thread(target=insere, args=(d,)) for d in (1, 101)]
+    for fil in fils:
+        fil.start()
+    for fil in fils:
+        fil.join()
+
+    assert erreurs == []
+    assert db.next_expected_number() - 1 == 150

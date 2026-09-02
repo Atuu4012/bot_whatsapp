@@ -79,8 +79,12 @@ def start_scheduler(
 
     # Balaie tous les banned_until expirés, pas seulement la dernière heure :
     # rattrape aussi ce qui a expiré pendant une coupure du bot (§11).
+    def process_returns_job() -> None:
+        with db.lock:
+            process_returns(db, gateway, config.group_jid, datetime.now())
+
     scheduler.add_job(
-        lambda: process_returns(db, gateway, config.group_jid, datetime.now()),
+        process_returns_job,
         "interval",
         hours=1,
         id="process_returns",
@@ -98,7 +102,8 @@ def start_scheduler(
         # le bot n'écrit rien dans le groupe (§8.4). Sinon une récap
         # surgirait un dimanche soir dans un groupe qui n'a pas encore été
         # prévenu que le bot existe.
-        text = weekly_recap(db, datetime.now() - timedelta(days=7))
+        with db.lock:
+            text = weekly_recap(db, datetime.now() - timedelta(days=7))
         if config.dry_run:
             log.info("DRY_RUN : récap hebdo non postée :\n%s", text)
             return

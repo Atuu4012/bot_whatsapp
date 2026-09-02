@@ -8,6 +8,7 @@ après un redémarrage.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -121,7 +122,14 @@ class Database:
         self.path = Path(path)
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        # Trois familles de threads touchent cette connexion : le thread
+        # principal au démarrage, celui sur lequel neonize livre les messages,
+        # et ceux du planificateur. `check_same_thread` lève la garde de
+        # sqlite3, `lock` la remplace — mais au niveau de l'opération métier,
+        # pas de la requête : un balayage ne doit pas s'intercaler au milieu
+        # d'un « lire le compteur puis insérer ».
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.lock = threading.RLock()
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.init_schema()
