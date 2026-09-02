@@ -15,6 +15,7 @@ def _config(**overrides) -> Config:
         dry_run=True,
         grace_period_seconds=90,
         caption_grace_period_seconds=300,
+        gap_warning_delay_seconds=30,
         tier1_hours=24,
         tier2_days=7,
         prescription_days=90,
@@ -38,6 +39,7 @@ def test_build_engine_wires_config_into_engine():
     assert engine.admin_jids == frozenset({"admin@s.whatsapp.net"})
     assert engine.grace_period == timedelta(seconds=42)
     assert engine.caption_grace_period == timedelta(seconds=123)
+    assert engine.gap_warning_delay == timedelta(seconds=30)
     assert engine.tiers == {1: timedelta(hours=1), 2: timedelta(days=2)}
     assert engine.prescription == timedelta(days=3)
 
@@ -51,6 +53,43 @@ def test_start_scheduler_registers_expected_jobs():
     scheduler = start_scheduler(db, gw, config, engine)
     try:
         job_ids = {job.id for job in scheduler.get_jobs()}
-        assert job_ids == {"process_returns", "sweep_pending_captions", "weekly_recap"}
+        assert job_ids == {
+            "process_returns",
+            "sweep_pending_captions",
+            "sweep_pending_warnings",
+            "weekly_recap",
+        }
     finally:
         scheduler.shutdown(wait=False)
+
+
+def test_weekly_recap_ne_poste_rien_en_dry_run():
+    """Une récap surgissant un dimanche soir trahirait un bot en observation."""
+    config = _config(dry_run=True)
+    db = Database(":memory:")
+    gw = FakeGateway()
+    engine = build_engine(config, db, gw)
+
+    scheduler = start_scheduler(db, gw, config, engine)
+    try:
+        job = scheduler.get_job("weekly_recap")
+        job.func()
+    finally:
+        scheduler.shutdown(wait=False)
+
+    assert gw.group_msgs == []
+
+
+def test_weekly_recap_poste_hors_dry_run():
+    config = _config(dry_run=False)
+    db = Database(":memory:")
+    gw = FakeGateway()
+    engine = build_engine(config, db, gw)
+
+    scheduler = start_scheduler(db, gw, config, engine)
+    try:
+        scheduler.get_job("weekly_recap").func()
+    finally:
+        scheduler.shutdown(wait=False)
+
+    assert len(gw.group_msgs) == 1

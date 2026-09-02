@@ -1,9 +1,10 @@
 """Point d'entrée : câble les dépendances et démarre le bot.
 
-Le mapping événement neonize -> IncomingMessage (juste avant `client.connect()`
-ci-dessous) doit être validé contre un groupe de test avant tout usage réel —
-voir §13.4 du plan. Tout le reste (Engine, moderation, milestones, stats) est
-testé indépendamment de neonize via FakeGateway (tests/fakes.py).
+Le mapping événement neonize -> IncomingMessage vit dans
+`gateway.to_incoming`, écrit d'après les événements réellement observés sur
+un groupe de test (§13.4) — voir `scripts/probe_events.py` pour les
+reconstater. Tout le reste (Engine, moderation, milestones, stats) est testé
+indépendamment de neonize via FakeGateway (tests/fakes.py).
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ def build_engine(config: Config, db: Database, gateway: WhatsAppGateway) -> Engi
         admin_jids=config.admin_jids,
         grace_period=timedelta(seconds=config.grace_period_seconds),
         caption_grace_period=timedelta(seconds=config.caption_grace_period_seconds),
+        gap_warning_delay=timedelta(seconds=config.gap_warning_delay_seconds),
         tiers={1: timedelta(hours=config.tier1_hours), 2: timedelta(days=config.tier2_days)},
         prescription=timedelta(days=config.prescription_days),
     )
@@ -62,10 +64,27 @@ def start_scheduler(
         minutes=1,
         id="sweep_pending_captions",
     )
+    def send_weekly_recap() -> None:
+        # Même règle que les sanctions et les paliers : en mode observation,
+        # le bot n'écrit rien dans le groupe (§8.4). Sinon une récap
+        # surgirait un dimanche soir dans un groupe qui n'a pas encore été
+        # prévenu que le bot existe.
+        text = weekly_recap(db, datetime.now() - timedelta(days=7))
+        if config.dry_run:
+            log.info("DRY_RUN : récap hebdo non postée :\n%s", text)
+            return
+        gateway.send_group(config.group_jid, text)
+
+    # Court : le délai de grâce avant d'avertir d'un numéro sauté se compte en
+    # dizaines de secondes, un balayage à la minute le doublerait.
     scheduler.add_job(
-        lambda: gateway.send_group(
-            config.group_jid, weekly_recap(db, datetime.now() - timedelta(days=7))
-        ),
+        lambda: engine.sweep_pending_warnings(datetime.now()),
+        "interval",
+        seconds=15,
+        id="sweep_pending_warnings",
+    )
+    scheduler.add_job(
+        send_weekly_recap,
         "cron",
         day_of_week="sun",
         hour=20,
@@ -88,14 +107,10 @@ def main() -> None:
     engine = build_engine(config, db, gateway)
     start_scheduler(db, gateway, config, engine)
 
-    # TODO (§13.4, phase WhatsApp) : brancher ici le handler d'événements
-    # neonize réel. Il doit construire un IncomingMessage à partir de
-    # l'événement reçu (message_id, jid expéditeur, push_name, has_image,
-    # caption, timestamp, is_system) puis appeler engine.handle(msg). La
-    # forme exacte des événements neonize (noms des champs) doit être
-    # validée sur un groupe de test avant tout branchement sur le vrai groupe.
+    gateway.on_message(engine.handle)
+
     log.info("BeerBot prêt (groupe=%s, dry_run=%s)", config.group_jid, config.dry_run)
-    gateway.client.connect()
+    gateway.connect()
 
 
 if __name__ == "__main__":
