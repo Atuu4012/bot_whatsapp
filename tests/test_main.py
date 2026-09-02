@@ -114,3 +114,10 @@ def test_le_handler_traite_et_journalise_la_decision(caplog):
     assert db.next_expected_number() == 2
     assert "Alix" in caplog.text
     assert "ACCEPTED" in caplog.text
+
+
+def test_apscheduler_ne_noie_pas_le_journal():
+    """Deux lignes toutes les 15 s rendraient le journal du soir illisible."""
+    import src.main  # noqa: F401 — l'import configure la journalisation
+
+    assert logging.getLogger("apscheduler").level == logging.WARNING

@@ -27,6 +27,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# APScheduler écrit deux lignes à chaque exécution : avec un balayage toutes
+# les 15 secondes, ça noie le journal des décisions qu'on relit le soir
+# pendant l'observation. On ne veut de lui que ses erreurs.
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 log = logging.getLogger("beerbot")
 
 
