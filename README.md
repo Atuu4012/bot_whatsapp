@@ -16,7 +16,9 @@ privée* plus bas).
 |---|---|
 | **Valider** | Un message conforme = 1 photo + le(s) numéro(s) attendu(s) (compteur + 1, éventuellement plusieurs numéros consécutifs pour rattraper plusieurs bières d'un coup), avec un peu de texte/emoji toléré autour. Légende oubliée ? Le numéro envoyé juste après dans un message séparé complète la photo. |
 | **Sanctionner** | Message non conforme → DM d'explication puis expulsion |
+| **Rattraper** | Numéro sauté (jusqu'à 50) → la bière est comptée quand même, le trou est comblé par une ligne « - » et l'auteur reçoit un simple avertissement. S'il corrige la légende de sa photo, la bière est renumérotée et le « - » se décale vers le numéro devenu manquant — sans prévenir ceux qui ont posté entre-temps, qui n'y sont pour rien. |
 | **Compter** | Le compteur est toujours `MAX(number)` en base, jamais une variable en mémoire |
+| **Reconnaître** | Un membre qui poste pour la première fois adopte automatiquement l'historique importé à son nom (`scripts/match_members.py` pour le reste) |
 | **Célébrer** | Message automatique dans le groupe aux paliers (1000, 2500, 5000, tous les 500…) |
 | **Statistiquer** | Classements, séries, récap hebdomadaire |
 
@@ -64,6 +66,32 @@ en prod (aucune écriture en base, aucune connexion WhatsApp) :
 python scripts/replay.py export.txt
 ```
 
+## Connexion WhatsApp (phase 2)
+
+L'iPhone qui porte le numéro dédié n'exécute aucun code du projet : il garde
+juste WhatsApp ouvert, branché en wifi, et sert d'« appareil principal » —
+le bot se connecte comme *appareil lié*.
+
+Appairer le bot (QR code à scanner depuis l'iPhone, *Réglages → Appareils
+liés*). Le script liste ensuite les groupes du bot avec leur JID, à recopier
+dans `BOT_GROUP_JID` :
+
+```bash
+python scripts/pair.py                        # ou --phone 33612345678 pour un code à 8 caractères
+```
+
+Constater la forme réelle des événements neonize **sur un groupe de test**,
+avant de câbler le TODO de `src/main.py` (§13.4). Le script est passif : il
+n'envoie rien, n'expulse personne, ne touche pas à la base :
+
+```bash
+python scripts/probe_events.py --chat 120363XXXXXX@g.us --dump data/probe.log
+```
+
+La session écrite dans `data/session.db` vaut un accès complet au compte du
+bot : elle reste hors du dépôt (`/data/` est ignoré) et se recopie telle
+quelle sur la machine qui hébergera le bot en 24/7.
+
 ## Structure
 
 ```
@@ -80,7 +108,7 @@ src/
 └── importer.py       # parsing des exports WhatsApp
 
 tests/               # 94 tests, aucun ne nécessite de connexion WhatsApp
-scripts/             # import_history, link_members, replay, backup
+scripts/             # pair, probe_events, import_history, link_members, replay, backup
 ```
 
 `gateway.py` est la seule pièce qui parle à `neonize` : tout le reste se
