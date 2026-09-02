@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
@@ -559,3 +560,28 @@ def test_lavertissement_part_si_rien_ne_bouge(engine):
     assert eng.sweep_pending_warnings(clock.now()) == ["m1"]
     assert len(gw.dms) == 1
     assert [row["action"] for row in db.infractions_for("a@s.whatsapp.net")] == ["warned"]
+
+
+def test_un_message_prive_nest_pas_juge(engine):
+    """Le bot reçoit ses DM : les juger expulserait leur auteur du groupe."""
+    eng, db, gw, clock = engine
+    prive = replace(msg("a@s.whatsapp.net", None, message_id="dm1"), chat="a@s.whatsapp.net")
+
+    assert eng.handle(prive) == Action.IGNORED_OTHER_CHAT
+    assert gw.kicked == []
+    assert eng.handle(replace(msg("a@s.whatsapp.net", 1, message_id="m1"), chat=GROUP)) == Action.ACCEPTED
+
+
+def test_un_autre_groupe_est_ignore(engine):
+    eng, db, gw, clock = engine
+    ailleurs = replace(msg("a@s.whatsapp.net", 1, message_id="m1"), chat="999@g.us")
+
+    assert eng.handle(ailleurs) == Action.IGNORED_OTHER_CHAT
+    assert db.next_expected_number() == 1
+
+
+def test_lhistorique_importe_na_pas_de_chat_et_reste_traite(engine):
+    """`importer.to_message` ne renseigne pas le chat : il vient du groupe."""
+    eng, db, gw, clock = engine
+
+    assert eng.handle(msg("a@s.whatsapp.net", 1, message_id="m1")).name == "ACCEPTED"

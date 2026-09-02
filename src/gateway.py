@@ -62,6 +62,10 @@ class IncomingMessage:
     timestamp: datetime
     is_system: bool = False
     is_revoked: bool = False  # message supprimé par son auteur (événement "revoke")
+    # Conversation d'où vient le message. None pour l'historique importé, qui
+    # vient forcément du groupe. Le moteur s'en sert pour ne juger que le
+    # groupe surveillé : le bot reçoit aussi ses DM et ses autres groupes.
+    chat: str | None = None
 
 
 MESSAGE_EDIT = "Message Edit"  # useCase whatsmeow (msgsecret.go)
@@ -255,6 +259,7 @@ def to_incoming(event, secrets: MessageSecrets | None = None) -> IncomingMessage
         timestamp=datetime.fromtimestamp(event.Info.Timestamp / 1000),
         is_system=False,
         is_revoked=is_revoked,
+        chat=canonical_jid(source.Chat),
     )
 
 

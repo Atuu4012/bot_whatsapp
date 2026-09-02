@@ -327,3 +327,10 @@ def test_un_image_message_vide_nest_pas_une_photo():
     event.Message.imageMessage.SetInParent()  # présent mais vide
 
     assert to_incoming(event) is None
+
+
+def test_le_chat_dorigine_est_conserve():
+    event = _event()
+    event.Message.conversation = "870"
+
+    assert to_incoming(event).chat == "120363430298528890@g.us"

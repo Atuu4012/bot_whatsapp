@@ -33,6 +33,7 @@ class Action(Enum):
     IGNORED_BOT = auto()
     IGNORED_DUPLICATE = auto()
     IGNORED_COLLISION = auto()
+    IGNORED_OTHER_CHAT = auto()
     ACCEPTED_WITH_GAP = auto()
     CORRECTED = auto()
     IGNORED_REVOKED = auto()
@@ -97,6 +98,13 @@ class Engine:
             return self._handle(msg)
 
     def _handle(self, msg: IncomingMessage) -> Action:
+        if msg.chat is not None and msg.chat != self.group:
+            # Le bot reçoit tout ce qui arrive sur son compte : ses DM, les
+            # autres groupes où on l'a mis. Rien de tout ça n'est une bière,
+            # et juger un message privé reviendrait à expulser son auteur du
+            # groupe surveillé pour ce qu'il a écrit ailleurs.
+            return Action.IGNORED_OTHER_CHAT
+
         if msg.is_system:
             return Action.IGNORED_SYSTEM
 
