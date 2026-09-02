@@ -78,11 +78,19 @@ def test_multiple_consecutive_numbers_starting_at_expected_are_accepted(caption)
     assert verdict.numbers == (658, 659, 660)
 
 
-def test_multiple_numbers_not_starting_at_expected_are_rejected():
+def test_multiple_numbers_ahead_of_the_counter_are_flagged_as_a_gap():
+    # Séquence bien formée mais démarrée trop loin : ce n'est pas une faute
+    # de numéro, c'est un trou — le moteur comble et prévient (§8.5).
     verdict = validate(img_msg("659 660 661"), 658)
     assert verdict.ok is False
-    assert verdict.reason == "WRONG_NUMBER"
+    assert verdict.reason == "NUMBER_AHEAD"
     assert verdict.number == 659
+
+
+def test_a_number_behind_the_counter_stays_a_wrong_number():
+    verdict = validate(img_msg("657"), 658)
+    assert verdict.ok is False
+    assert verdict.reason == "WRONG_NUMBER"
 
 
 def test_multiple_numbers_with_a_gap_are_rejected():
@@ -138,3 +146,12 @@ def test_dimension_or_volume_is_not_read_as_a_batch_multiplier(caption):
     # « 6x9 », « 2x50cl »… ne doivent pas rattraper des dizaines de bières.
     verdict = validate(img_msg(caption), 6)
     assert verdict.ok is False
+
+
+def test_un_trou_plausible_est_un_numero_saute():
+    assert validate(img_msg("700"), 658).reason == "NUMBER_AHEAD"
+
+
+def test_un_bond_invraisemblable_reste_une_faute():
+    # « 6580 » pour « 658 » : combler créerait des milliers de lignes « - ».
+    assert validate(img_msg("6580"), 658).reason == "WRONG_NUMBER"

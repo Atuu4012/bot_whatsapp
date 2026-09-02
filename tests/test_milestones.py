@@ -68,3 +68,16 @@ def test_celebration_message_includes_leaderboard(db):
     check_and_celebrate(1000, "a@s.whatsapp.net", db, gw, "group", datetime(2026, 1, 1))
 
     assert "Arthur" in gw.group_msgs[0]
+
+
+def test_milestone_silencieux_en_dry_run(db):
+    """Mode observation (§8.4) : le bot ne parle pas dans le groupe."""
+    gw = FakeGateway()
+    now = datetime(2026, 1, 1)
+
+    posted = check_and_celebrate(1000, "a@s.whatsapp.net", db, gw, "group", now, dry_run=True)
+
+    assert posted is False
+    assert gw.group_msgs == []
+    # Le palier n'est pas marqué comme fêté : il ne l'a pas été.
+    assert db.milestone_hit(1000) is False

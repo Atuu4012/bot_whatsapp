@@ -2,12 +2,20 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.db import Database
+from src.db import PLACEHOLDER_JID, Beer, Database, Member
 from src.engine import Action, Engine
 from src.gateway import IncomingMessage
 from tests.fakes import FakeClock, FakeGateway
 
 GROUP = "group@g.us"
+
+
+def bad_msg(jid, message_id="m1", caption="coucou les amis"):
+    """Message non conforme quel que soit le compteur : légende illisible."""
+    return IncomingMessage(
+        message_id=message_id, jid=jid, push_name="X", has_image=True,
+        caption=caption, timestamp=datetime(2026, 1, 1),
+    )
 
 
 def msg(jid, number, message_id="m1", has_image=True, is_system=False, push_name="X"):
@@ -43,7 +51,7 @@ def test_accepts_first_correct_beer(engine):
 def test_wrong_number_awaits_a_correction_then_gets_kicked_if_none_comes(engine):
     eng, db, gw, clock = engine
 
-    result = eng.handle(msg("a@s.whatsapp.net", 5, message_id="m1"))
+    result = eng.handle(bad_msg("a@s.whatsapp.net", message_id="m1"))
     assert result == Action.AWAITING_CAPTION
     assert gw.kicked == []
 
@@ -61,7 +69,7 @@ def test_wrong_number_photo_corrected_right_after_is_accepted(engine):
 
     eng.handle(msg("a@s.whatsapp.net", 1, message_id="m1"))  # compteur -> 2
     clock.advance(timedelta(seconds=5))
-    result = eng.handle(msg("a@s.whatsapp.net", 999, message_id="m2"))  # faux numéro
+    result = eng.handle(bad_msg("a@s.whatsapp.net", message_id="m2"))  # légende illisible
     assert result == Action.AWAITING_CAPTION
 
     clock.advance(timedelta(seconds=5))
@@ -82,7 +90,7 @@ def test_dry_run_sanctions_without_touching_the_group():
     clock = FakeClock(datetime(2026, 1, 1))
     eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=True, clock=clock)
 
-    result = eng.handle(msg("a@s.whatsapp.net", 5))
+    result = eng.handle(bad_msg("a@s.whatsapp.net"))
     assert result == Action.AWAITING_CAPTION
 
     clock.advance(timedelta(minutes=10))
@@ -162,7 +170,7 @@ def test_admin_is_never_kicked_and_no_infraction_is_logged():
         clock=FakeClock(datetime(2026, 1, 1)), admin_jids=frozenset({"admin@s.whatsapp.net"}),
     )
 
-    result = eng.handle(msg("admin@s.whatsapp.net", 5))
+    result = eng.handle(bad_msg("admin@s.whatsapp.net"))
 
     assert result == Action.ADMIN_EXEMPT
     assert gw.kicked == []
@@ -393,3 +401,161 @@ def test_second_uncaptioned_photo_while_one_already_pending_is_sanctioned():
 
     assert result == Action.SANCTIONED
     assert gw.kicked == ["a@s.whatsapp.net"]
+
+
+def test_legende_corrigee_leve_la_photo_en_attente(engine):
+    """Une édition arrive sous l'ID du message d'origine : la photo mise en
+    attente n'est plus en faute et le balayage ne doit pas la sanctionner."""
+    eng, db, gw, clock = engine
+
+    photo = msg("a@s.whatsapp.net", None, message_id="M1")
+    assert eng.handle(photo) == Action.AWAITING_CAPTION
+
+    corrigee = msg("a@s.whatsapp.net", 1, message_id="M1")
+    assert eng.handle(corrigee) == Action.ACCEPTED
+
+    clock.advance(timedelta(minutes=10))
+    assert eng.sweep_pending_captions(clock.now()) == []
+    assert gw.kicked == []
+    assert gw.dms == []
+
+
+def test_numero_saute_est_accepte_comble_et_averti(engine):
+    """Un trou ne casse plus la chaîne : « - » à la place, bière comptée,
+    auteur prévenu — et surtout personne d'expulsé."""
+    eng, db, gw, clock = engine
+
+    result = eng.handle(msg("a@s.whatsapp.net", 3, message_id="m1"))
+
+    assert result == Action.ACCEPTED_WITH_GAP
+    assert db.get_beer(1).jid == PLACEHOLDER_JID
+    assert db.get_beer(2).jid == PLACEHOLDER_JID
+    assert db.get_beer(3).jid == "a@s.whatsapp.net"
+    assert db.next_expected_number() == 4
+    assert gw.kicked == []
+    # Rien tout de suite : on laisse le temps de se corriger soi-même.
+    assert gw.dms == []
+
+    clock.advance(timedelta(seconds=31))
+    assert eng.sweep_pending_warnings(clock.now()) == ["m1"]
+    assert "1 à 2" in gw.dms[0][1]
+
+
+def test_correction_quand_personne_na_poste_apres(engine):
+    """« la personne pourra changer si personne n'a envoyé de bière après »."""
+    eng, db, gw, clock = engine
+    eng.handle(msg("a@s.whatsapp.net", 3, message_id="m1"))
+
+    result = eng.handle(msg("a@s.whatsapp.net", 1, message_id="m1"))
+
+    assert result == Action.CORRECTED
+    assert db.get_beer(1).jid == "a@s.whatsapp.net"
+    assert db.get_beer(2) is None  # le « - » de tête ne tient pas le compteur
+    assert db.get_beer(3) is None
+    assert db.next_expected_number() == 2
+
+
+def test_correction_apres_dautres_bieres_decale_le_tiret(engine):
+    """Le trou se déplace vers le numéro devenu manquant, et ceux qui ont
+    posté entre-temps ne sont prévenus de rien : ce n'est pas leur faute."""
+    eng, db, gw, clock = engine
+    eng.handle(msg("a@s.whatsapp.net", 3, message_id="m1"))
+    eng.handle(msg("b@s.whatsapp.net", 4, message_id="m2"))
+    dms_avant = len(gw.dms)
+
+    result = eng.handle(msg("a@s.whatsapp.net", 1, message_id="m1"))
+
+    assert result == Action.CORRECTED
+    assert db.get_beer(1).jid == "a@s.whatsapp.net"
+    assert db.get_beer(3).jid == PLACEHOLDER_JID  # le tiret a suivi
+    assert db.get_beer(4).jid == "b@s.whatsapp.net"
+    assert len(gw.dms) == dms_avant
+    assert gw.kicked == []
+
+
+def test_correction_refusee_si_la_place_est_prise(engine):
+    eng, db, gw, clock = engine
+    eng.handle(msg("a@s.whatsapp.net", 3, message_id="m1"))
+    eng.handle(msg("b@s.whatsapp.net", 4, message_id="m2"))
+
+    result = eng.handle(msg("a@s.whatsapp.net", 4, message_id="m1"))
+
+    assert result == Action.IGNORED_DUPLICATE
+    assert db.get_beer(4).jid == "b@s.whatsapp.net"
+    assert db.get_beer(3).jid == "a@s.whatsapp.net"
+
+
+def test_numero_saute_en_dry_run_ne_dit_rien():
+    db = Database(":memory:")
+    gw = FakeGateway()
+    eng = Engine(db=db, gateway=gw, group=GROUP, dry_run=True, clock=FakeClock(datetime(2026, 1, 1)))
+
+    assert eng.handle(msg("a@s.whatsapp.net", 3)) == Action.ACCEPTED_WITH_GAP
+
+    eng.sweep_pending_warnings(datetime(2026, 1, 1, 1))
+    assert gw.dms == []
+    assert [row["action"] for row in db.infractions_for("a@s.whatsapp.net")] == ["dry_run"]
+
+
+def test_le_membre_adopte_son_historique_importe(engine):
+    """Le JID réel remplace le bouchon de l'import dès le premier message."""
+    eng, db, gw, clock = engine
+    db.save_member(Member(jid="arthur-parizot@unmapped.local", display_name="Arthur Parizot"))
+    db.insert_beer(
+        Beer(number=1, jid="arthur-parizot@unmapped.local", posted_at=datetime(2026, 1, 1), source="import")
+    )
+
+    eng.handle(msg("33651422598@s.whatsapp.net", 2, message_id="m1", push_name="Arthur Parizot"))
+
+    assert db.get_member("arthur-parizot@unmapped.local") is None
+    assert db.get_beer(1).jid == "33651422598@s.whatsapp.net"
+    assert db.get_beer(2).jid == "33651422598@s.whatsapp.net"
+
+
+def test_numero_saute_envoye_apres_la_photo_est_traite_pareil(engine):
+    """Photo sans légende, puis un numéro qui saute un cran : même règle."""
+    eng, db, gw, clock = engine
+    eng.handle(msg("a@s.whatsapp.net", None, message_id="m1"))
+
+    clock.advance(timedelta(seconds=5))
+    suite = IncomingMessage(
+        message_id="m2", jid="a@s.whatsapp.net", push_name="X",
+        has_image=False, caption="3", timestamp=clock.now(),
+    )
+    result = eng.handle(suite)
+
+    assert result == Action.ACCEPTED_WITH_GAP
+    assert db.get_beer(3).jid == "a@s.whatsapp.net"
+    assert db.get_beer(1).jid == PLACEHOLDER_JID
+    assert gw.kicked == []
+
+    clock.advance(timedelta(seconds=31))
+    eng.sweep_pending_warnings(clock.now())
+    assert len(gw.dms) == 1
+
+
+def test_corriger_dans_le_delai_evite_lavertissement(engine):
+    """Se rendre compte de son saut tout seul ne vaut aucun message."""
+    eng, db, gw, clock = engine
+    eng.handle(msg("a@s.whatsapp.net", 3, message_id="m1"))
+
+    clock.advance(timedelta(seconds=10))
+    assert eng.handle(msg("a@s.whatsapp.net", 1, message_id="m1")) == Action.CORRECTED
+
+    clock.advance(timedelta(minutes=5))
+    assert eng.sweep_pending_warnings(clock.now()) == []
+    assert gw.dms == []
+    assert db.infractions_for("a@s.whatsapp.net") == []
+
+
+def test_lavertissement_part_si_rien_ne_bouge(engine):
+    eng, db, gw, clock = engine
+    eng.handle(msg("a@s.whatsapp.net", 3, message_id="m1"))
+
+    clock.advance(timedelta(seconds=29))
+    assert eng.sweep_pending_warnings(clock.now()) == []
+
+    clock.advance(timedelta(seconds=2))
+    assert eng.sweep_pending_warnings(clock.now()) == ["m1"]
+    assert len(gw.dms) == 1
+    assert [row["action"] for row in db.infractions_for("a@s.whatsapp.net")] == ["warned"]

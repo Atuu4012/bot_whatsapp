@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from src.db import Database
+
+log = logging.getLogger(__name__)
 
 MILESTONES = [1000, 2000, 5000, 7500, 10000, 15000, 20000, 25000, 50000, 75000, 100000, 150000, 200000, 250000, 500000, 750000, 1000000]
 ROUND_EVERY = 500  # célèbre aussi tous les 500, en plus des paliers ci-dessus
@@ -28,11 +31,24 @@ def build_celebration_message(n: int, jid: str, db: Database) -> str:
     )
 
 
-def check_and_celebrate(n: int, jid: str, db: Database, gateway, group: str, now: datetime) -> bool:
+def check_and_celebrate(
+    n: int,
+    jid: str,
+    db: Database,
+    gateway,
+    group: str,
+    now: datetime,
+    dry_run: bool = False,
+) -> bool:
     """Poste le message de palier si `n` en est un et n'a pas déjà été fêté.
 
     Retourne True si un message a été posté. Le contrôle en base
     (`milestones_hit`) évite le doublon après un redémarrage du bot.
+
+    En mode observation (§8.4), le message est journalisé au lieu d'être
+    posté : le bot ne doit rien dire dans le groupe tant que la modération
+    n'est pas validée. Le palier n'est alors pas marqué comme fêté — il ne
+    l'a pas été.
     """
 
     if not is_milestone(n):
@@ -40,6 +56,11 @@ def check_and_celebrate(n: int, jid: str, db: Database, gateway, group: str, now
     if db.milestone_hit(n):
         return False
 
-    gateway.send_group(group, build_celebration_message(n, jid, db))
+    message = build_celebration_message(n, jid, db)
+    if dry_run:
+        log.info("DRY_RUN : palier %s atteint, message non posté :\n%s", n, message)
+        return False
+
+    gateway.send_group(group, message)
     db.record_milestone(n, now, jid)
     return True

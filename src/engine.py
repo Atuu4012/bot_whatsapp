@@ -9,16 +9,22 @@ modération / des paliers.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import Enum, auto
 
-from src import milestones, moderation
-from src.db import Beer, Database, Member
+from src import identity, milestones, moderation
+from src.db import PLACEHOLDER_JID, Beer, Database, Member
 from src.gateway import IncomingMessage, WhatsAppGateway
+
+log = logging.getLogger(__name__)
 
 DEFAULT_GRACE_PERIOD = timedelta(seconds=90)
 DEFAULT_CAPTION_GRACE_PERIOD = timedelta(minutes=5)
+# Un numéro sauté se remarque souvent tout seul : on laisse à l'auteur le
+# temps de corriger sa légende avant de lui écrire quoi que ce soit.
+DEFAULT_GAP_WARNING_DELAY = timedelta(seconds=30)
 
 
 class Action(Enum):
@@ -27,6 +33,8 @@ class Action(Enum):
     IGNORED_BOT = auto()
     IGNORED_DUPLICATE = auto()
     IGNORED_COLLISION = auto()
+    ACCEPTED_WITH_GAP = auto()
+    CORRECTED = auto()
     IGNORED_REVOKED = auto()
     AWAITING_CAPTION = auto()
     ADMIN_EXEMPT = auto()
@@ -38,6 +46,15 @@ class Clock:
 
     def now(self) -> datetime:
         return datetime.now()
+
+
+@dataclass
+class _PendingWarning:
+    jid: str
+    missing: list[int]
+    numbers: tuple[int, ...]
+    caption: str | None
+    posted_at: datetime
 
 
 @dataclass
@@ -59,10 +76,14 @@ class Engine:
     bot_jid: str | None = None
     grace_period: timedelta = DEFAULT_GRACE_PERIOD
     caption_grace_period: timedelta = DEFAULT_CAPTION_GRACE_PERIOD
+    gap_warning_delay: timedelta = DEFAULT_GAP_WARNING_DELAY
     tiers: dict[int, timedelta] | None = None
     prescription: timedelta | None = None
     _pending: dict[str, _PendingPhoto] = field(default_factory=dict, init=False, repr=False)
     _consumed_followups: set[str] = field(default_factory=set, init=False, repr=False)
+    _pending_warnings: dict[str, _PendingWarning] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if self.clock is None:
@@ -84,12 +105,13 @@ class Engine:
         if msg.message_id and msg.message_id in self._consumed_followups:
             return Action.IGNORED_DUPLICATE
 
-        if msg.message_id and self.db.get_beer_by_message_id(msg.message_id):
-            return Action.IGNORED_DUPLICATE
-
         self._ensure_member(msg)
         now = self.clock.now()
         is_admin = msg.jid in self.admin_jids
+
+        deja_comptees = self.db.beers_for_message(msg.message_id)
+        if deja_comptees:
+            return self._try_correction(msg, deja_comptees, now)
 
         # Photo dont le numéro ne correspond pas (légende absente, tapée de
         # travers, corrigée après coup...) : si le message suivant est un
@@ -106,21 +128,16 @@ class Engine:
         verdict = validate(msg, expected)
 
         if verdict.ok:
-            # Une légende peut lister plusieurs numéros consécutifs
-            # ("658 659 660") quand plusieurs bières sont rattrapées d'un
-            # coup dans une seule photo : une ligne par numéro.
-            for number in verdict.numbers:
-                self.db.insert_beer(
-                    Beer(
-                        number=number,
-                        jid=msg.jid,
-                        message_id=msg.message_id,
-                        posted_at=now,
-                        source="live",
-                    )
-                )
-                milestones.check_and_celebrate(number, msg.jid, self.db, self.gateway, self.group, now)
+            self._clear_pending_for(msg)
+            self._record_beers(verdict.numbers, msg.jid, msg.message_id, now)
             return Action.ACCEPTED
+
+        if verdict.reason == "NUMBER_AHEAD":
+            # Un numéro sauté ne casse pas la chaîne : on comble le trou par
+            # un « - », la bière est comptée, et l'auteur est prévenu qu'il
+            # peut encore corriger. Personne n'est sanctionné pour ça.
+            self._clear_pending_for(msg)
+            return self._accept_gap(msg, verdict.numbers, msg.message_id, expected, now)
 
         if self._is_collision(verdict, expected, now):
             return Action.IGNORED_COLLISION
@@ -183,25 +200,150 @@ class Engine:
         # attente, sans toucher au message d'origine.
         as_caption = replace(msg, has_image=True)
         verdict = validate(as_caption, expected)
-        if not verdict.ok:
+        if not verdict.ok and verdict.reason != "NUMBER_AHEAD":
             return None  # ne correspond pas (encore) : la photo reste en attente
 
         del self._pending[msg.jid]
         if msg.message_id:
             self._consumed_followups.add(msg.message_id)
 
-        for number in verdict.numbers:
+        if verdict.reason == "NUMBER_AHEAD":
+            # Même règle que pour une légende directe : le numéro envoyé
+            # après coup a beau sauter un cran, il complète bien la photo.
+            return self._accept_gap(msg, verdict.numbers, pending.message_id, expected, now)
+
+        self._record_beers(verdict.numbers, msg.jid, pending.message_id, now)
+        return Action.ACCEPTED
+
+    def _record_beers(
+        self, numbers: tuple[int, ...], jid: str, message_id: str | None, now: datetime
+    ) -> None:
+        """Enregistre une ou plusieurs bières nées du même message.
+
+        Une légende peut lister plusieurs numéros consécutifs ("658 659 660")
+        quand plusieurs bières sont rattrapées d'un coup dans une photo : une
+        ligne par numéro, et un palier vérifié à chaque fois.
+        """
+        for number in numbers:
             self.db.insert_beer(
                 Beer(
                     number=number,
-                    jid=msg.jid,
-                    message_id=pending.message_id,
+                    jid=jid,
+                    message_id=message_id,
                     posted_at=now,
                     source="live",
                 )
             )
-            milestones.check_and_celebrate(number, msg.jid, self.db, self.gateway, self.group, now)
-        return Action.ACCEPTED
+            milestones.check_and_celebrate(
+                number, jid, self.db, self.gateway, self.group, now, self.dry_run
+            )
+
+    def _accept_gap(
+        self,
+        msg: IncomingMessage,
+        numbers: tuple[int, ...],
+        message_id: str | None,
+        expected: int,
+        now: datetime,
+    ) -> Action:
+        """Compte la bière, comble ce qui manque, prévient l'auteur.
+
+        L'avertissement ne parle que du saut commis ici : `restore_sequence`
+        peut par ailleurs reboucher de vieux trous, qui ne regardent pas
+        l'auteur du jour.
+        """
+        sautes = list(range(expected, numbers[0]))
+        self._record_beers(numbers, msg.jid, message_id, now)
+        self.db.restore_sequence(now)
+        # L'avertissement attend : beaucoup se rendent compte de leur saut
+        # tout seuls et corrigent leur légende dans la foulée. Leur écrire
+        # tout de suite reviendrait à sermonner quelqu'un déjà en train de
+        # réparer. Le balayage périodique l'enverra si rien ne bouge.
+        self._pending_warnings[message_id or f"sans-id-{numbers[0]}"] = _PendingWarning(
+            jid=msg.jid, missing=sautes, numbers=numbers, caption=msg.caption, posted_at=now
+        )
+        return Action.ACCEPTED_WITH_GAP
+
+    def sweep_pending_warnings(self, now: datetime) -> list[str]:
+        """Envoie les avertissements « numéro sauté » dont le délai est passé.
+
+        Ceux dont la légende a été corrigée entre-temps ont déjà quitté la
+        file : c'est tout l'intérêt du délai. Retourne les message_id
+        avertis.
+        """
+        dus = [
+            mid
+            for mid, warning in self._pending_warnings.items()
+            if now - warning.posted_at >= self.gap_warning_delay
+        ]
+        for mid in dus:
+            warning = self._pending_warnings.pop(mid)
+            moderation.warn_skipped_numbers(
+                self.db, self.gateway, warning.jid, warning.missing, warning.numbers,
+                warning.caption, now, self.dry_run,
+            )
+        return dus
+
+    def _clear_pending_for(self, msg: IncomingMessage) -> None:
+        """Une légende corrigée arrive sous l'identité du message d'origine :
+        la photo mise en attente n'est plus en faute, et le balayage
+        périodique ne doit pas la sanctionner après coup."""
+        pending = self._pending.get(msg.jid)
+        if pending is not None and pending.message_id == msg.message_id:
+            del self._pending[msg.jid]
+
+    def _try_correction(self, msg: IncomingMessage, deja: list[Beer], now: datetime) -> Action:
+        """Renumérote une bière déjà comptée dont la légende a été corrigée.
+
+        C'est le droit à l'erreur promis dans l'avertissement « numéro
+        sauté » : tant que la place visée est libre — ou seulement tenue par
+        un « - » —, la bière s'y déplace, puis `restore_sequence` recolle la
+        chaîne. Le tiret se décale donc tout seul vers le trou laissé
+        derrière, et personne d'autre n'est prévenu : ceux qui ont posté
+        après n'y sont pour rien.
+        """
+        from src.validator import parse_numbers  # import tardif : évite un cycle
+
+        anciens = [beer.number for beer in deja]
+        nouveaux = parse_numbers(msg.caption) if msg.caption else None
+        if not nouveaux or list(nouveaux) == anciens:
+            return Action.IGNORED_DUPLICATE
+
+        if any(n != nouveaux[0] + i for i, n in enumerate(nouveaux)):
+            return Action.IGNORED_DUPLICATE  # correction illisible : on garde l'existant
+
+        a_liberer = []
+        for number in nouveaux:
+            occupant = self.db.get_beer(number)
+            if occupant is None or number in anciens:
+                continue
+            if occupant.jid != PLACEHOLDER_JID:
+                # La place est prise par la bière de quelqu'un d'autre :
+                # corriger ici écraserait son travail.
+                log.info(
+                    "correction de %s refusée : le numéro %s est déjà pris par %s",
+                    msg.message_id, number, occupant.jid,
+                )
+                return Action.IGNORED_DUPLICATE
+            a_liberer.append(number)
+
+        modele = deja[0]
+        self.db.delete_beers(anciens + a_liberer)
+        for number in nouveaux:
+            self.db.insert_beer(
+                Beer(
+                    number=number,
+                    jid=modele.jid,
+                    message_id=msg.message_id,
+                    posted_at=modele.posted_at,
+                    source=modele.source,
+                )
+            )
+        self.db.restore_sequence(now)
+        # Corrigé avant que l'avertissement ne parte : il n'a plus lieu d'être.
+        self._pending_warnings.pop(msg.message_id, None)
+        log.info("bière(s) %s corrigée(s) en %s", anciens, list(nouveaux))
+        return Action.CORRECTED
 
     def _is_collision(self, verdict, expected: int, now: datetime) -> bool:
         """Deux personnes postent le même numéro à quelques secondes
@@ -214,6 +356,14 @@ class Engine:
 
     def _ensure_member(self, msg: IncomingMessage) -> Member:
         member = self.db.get_member(msg.jid)
+        if member is None:
+            # Première apparition de ce JID : peut-être la même personne que
+            # celle que l'import ne connaît que par son nom d'export. Si le
+            # rapprochement est sans ambiguïté, elle récupère son historique
+            # au lieu de repartir de zéro (§6.3).
+            identity.adopt_history(self.db, msg.jid, msg.push_name)
+            member = self.db.get_member(msg.jid)
+
         if member is None:
             member = Member(jid=msg.jid, push_name=msg.push_name, joined_at=self.clock.now())
             self.db.save_member(member)

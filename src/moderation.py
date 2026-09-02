@@ -19,6 +19,8 @@ REASONS = {
     "WRONG_NUMBER": "le numéro ne suivait pas le compteur, on ne peut pas tricher !",
 }
 
+SKIPPED_NUMBER = "SKIPPED_NUMBER"
+
 TIER_NOTICES = {
     1: "C'est ton premier avertissement. Tu seras réintégré automatiquement dans 24 h.",
     2: "Deuxième infraction : retour automatique dans 7 jours.",
@@ -124,3 +126,50 @@ def process_returns(db: Database, gateway: WhatsAppGateway, group: str, now: dat
 
         member.banned_until = None
         db.save_member(member)
+
+
+def build_gap_warning(missing: list[int], posted: tuple[int, ...]) -> str:
+    """DM d'avertissement : un numéro a été sauté, la chaîne tient quand même.
+
+    Les numéros manquants forment toujours une plage contiguë : on l'écrit
+    comme telle, sinon un trou d'une trentaine de bières donnerait un pavé
+    illisible.
+    """
+    if len(missing) == 1:
+        manquants = f"le numéro {missing[0]} manque"
+    else:
+        manquants = f"les numéros {missing[0]} à {missing[-1]} manquent"
+
+    return (
+        f"🍺 Tu as posté {posted[0]} alors qu'on attendait {missing[0]} : "
+        f"{manquants} à l'appel." + chr(10) * 2 +
+        "J'ai mis un « - » à la place pour ne pas casser le compteur, ta bière est comptée. "
+        "Si personne n'a encore posté après toi, tu peux corriger : modifie la légende de ta "
+        "photo et je remets tout d'aplomb." + chr(10) * 2 +
+        "Sinon, ce n'est pas grave — mais fais attention la prochaine fois."
+    )
+
+
+def warn_skipped_numbers(
+    db: Database,
+    gateway: WhatsAppGateway,
+    jid: str,
+    missing: list[int],
+    posted: tuple[int, ...],
+    raw_content: str | None,
+    now: datetime,
+    dry_run: bool,
+) -> None:
+    """Prévient l'auteur d'un numéro sauté. Jamais une sanction : pas
+    d'escalade, pas de `kick_count` — juste une trace et un DM."""
+
+    if not missing:
+        return
+
+    db.insert_infraction(
+        jid, SKIPPED_NUMBER, raw_content, "dry_run" if dry_run else "warned", now
+    )
+    if dry_run:
+        return
+
+    gateway.send_dm(jid, build_gap_warning(missing, posted))

@@ -42,6 +42,12 @@ _MULTIPLIER_MAX_COUNT = 12
 # les vraies légendes observées (1 à 6 mots, ex. "rouge et vert ça fait jaune").
 MAX_EXTRA_WORDS = 6
 
+# Au-delà, un numéro en avance n'est plus un trou plausible mais une faute de
+# frappe (« 8760 » pour « 876 ») : le comblement créerait des milliers de
+# lignes « - » et emporterait le compteur. Large exprès — le bot peut avoir
+# raté une soirée entière de bières pendant une coupure.
+MAX_GAP = 50
+
 
 @dataclass
 class Verdict:
@@ -100,7 +106,16 @@ def validate(msg: IncomingMessage, expected: int) -> Verdict:
     first = numbers[0]
     is_consecutive = all(n == first + i for i, n in enumerate(numbers))
 
-    if not is_consecutive or first != expected:
+    if not is_consecutive:
+        return Verdict(False, "WRONG_NUMBER", number=first, numbers=numbers)
+
+    if expected < first <= expected + MAX_GAP:
+        # Numéro sauté : la légende est bien formée, elle démarre juste trop
+        # loin. Ce n'est pas une faute de la même nature qu'un numéro faux —
+        # le moteur comble le trou et prévient, il ne sanctionne pas.
+        return Verdict(False, "NUMBER_AHEAD", number=first, numbers=numbers)
+
+    if first != expected:
         return Verdict(False, "WRONG_NUMBER", number=first, numbers=numbers)
 
     return Verdict(True, number=first, numbers=numbers)
