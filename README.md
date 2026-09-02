@@ -121,7 +121,7 @@ attribution.
 
 ```bash
 # WhatsApp → le groupe → Exporter la discussion → Sans médias
-python scripts/import_history.py export.txt membres.csv data/beerbot.db
+python scripts/import_history.py _chat.txt membres.csv data/beerbot.db
 ```
 
 L'import ne réinsère que les numéros absents : le relancer sur une base
@@ -143,7 +143,7 @@ python -m src.main
 WARNING beerbot: DRY_RUN actif : aucune sanction réelle ne sera appliquée.
 INFO beerbot: BeerBot prêt (groupe=120363XXXXXXXXXXXX@g.us, dry_run=True)
 INFO whatsmeow.Client: Successfully authenticated
-INFO beerbot: photo de Alix Peignon | légende='869' -> ACCEPTED
+INFO beerbot: photo de Alix  | légende='869' -> ACCEPTED
 INFO beerbot: photo de Milos | légende=None -> AWAITING_CAPTION
 INFO beerbot: texte de Milos | légende='870' -> ACCEPTED
 INFO beerbot: photo de Hugzzz | légende='874' -> ACCEPTED_WITH_GAP
@@ -177,7 +177,7 @@ Les membres qui postent se font reconnaître automatiquement. Pour les autres,
 compléter le mapping nom → JID :
 
 ```bash
-python scripts/match_members.py data/beerbot.db membres.csv --export export.txt
+python scripts/match_members.py data/beerbot.db membres.csv --export _chat_.txt
 ```
 
 ⚠️ **Ne fais pas tourner `scripts/probe_events.py` en même temps que le
